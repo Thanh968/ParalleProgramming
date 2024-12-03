@@ -1,7 +1,6 @@
 #include<iostream>
 #include<fstream>
 #include<string>
-#include<vector>
 #include<math.h>
 
 using namespace std;
@@ -37,7 +36,7 @@ void read_mnist(string filename, float* &inputData, unsigned int& number_of_imag
         cout << "Number of images: "<<number_of_images << endl;
         cout << "Number of rows: " << n_rows << endl;
         cout  << "Number of cols: " << n_cols << endl; 
-        unsigned int required_mem_size = number_of_images * (n_rows * n_cols + 1);
+        unsigned int required_mem_size = number_of_images * (n_rows * n_cols);
         inputData = (float*)malloc(required_mem_size * sizeof(int));
         for(int i=0;i<number_of_images;++i)
         {
@@ -49,7 +48,7 @@ void read_mnist(string filename, float* &inputData, unsigned int& number_of_imag
                     unsigned char temp=0;
                     file.read((char*)&temp,sizeof(temp));
                     // Doc tung pixel
-                    inputData[i*n_rows*n_cols + r * n_cols + c + 1] = temp;
+                    inputData[i*n_rows*n_cols + r * n_cols + c] = temp;
                 }
 
             }
@@ -84,7 +83,7 @@ float relu(float x) {
     return result;
 }
 
-void forwardNN(float* input, float* weight, float* output, int inputRows, int inputCols, int outputCols, bool includeBias = true) {
+void forwardNN(float* input, float* weight, float* bias, float* output, int inputRows, int inputCols, int outputCols, bool includeBias = true) {
     for (int i = 0; i < inputRows; i++) {
         for (int j = 0; j < outputCols; j++) {
             float temp = 0;
@@ -93,9 +92,11 @@ void forwardNN(float* input, float* weight, float* output, int inputRows, int in
                 temp += input[i * inputCols + k] * weight[k * outputCols + j];
             }
 
-            if (includeBias)
-                output[i * outputCols + j + 1] = relu(temp);
-            else {
+            temp += bias[j];
+
+            if (includeBias) {   
+                output[i * outputCols + j] = relu(temp);
+            } else {
                 output[i * outputCols + j ] = relu(temp);
             }
         }
@@ -126,6 +127,70 @@ void initialize_weights(float* weights, int rows, int cols)  {
     }
 }
 
+void initialize_biases(float* bias, int rows) {
+    for (int i = 0; i < rows; i++) {
+        bias[i] = float(rand()) / RAND_MAX;
+    }
+}
+
+void calculateLastDelta(float* y_pred, float* y, float* delta, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            delta[i*cols + j] = y_pred[i*cols + j] - y[i*cols + j];
+        }
+    }
+}
+
+void multiplyMatrix(float* matrix_a, float* matrix_b, float* result,int rows_a, int cols_a, int cols_b) {
+    for (int i = 0; i< rows_a; i++) {
+        for (int j = 0; j < cols_b; j++) {
+            float temp = 0.0;
+            for (int k = 0; k < cols_a; k++) {
+                temp += matrix_a[i*cols_a + k] * matrix_b[k * cols_b + j];
+            }
+            result[i*cols_b + j] = temp;
+        }
+    }
+}
+
+void transposeMatrix(float* inputMatrix, float* outputMatrix, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            outputMatrix[j * rows + i] = inputMatrix[i * cols + j];
+        }
+    }
+}
+
+void relu_derivative(float* input, float* output, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            if (input[i*cols + j] > 0) {
+                output[i*cols + j] = 1;
+            } else {
+                output[i*cols + j] = 0;
+            }
+        }
+    }
+}
+
+void multiplyMatrixElementWise(float* matrix_a, float* matrix_b, float* result, int rows, int cols) {
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            result[i * cols+ j] = matrix_a[i * cols + j] * matrix_b[i*cols + j];
+        }
+    }
+}
+
+void gradientForBias(float* delta, float* gradient,int rows, int cols) {
+    for (int c = 0; c < cols; c++) {
+        float temp = 0;
+        for (int r = 0; r < rows; r++) {
+            temp += delta[r*cols+c];
+        }
+        gradient[c] = temp;
+    }
+}
+
 int main() {
 
     // Data file
@@ -140,13 +205,6 @@ int main() {
     unsigned int number_of_images, n_rows, n_cols;
     read_mnist(filename, input_data, number_of_images, n_rows, n_cols);
 
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < 10; j++) {
-            cout << input_data[i*785 + j] << ' ';
-        }
-        cout << endl;
-    }
-
     unsigned int requiredMemsizeForLabel = number_of_images * 10;
     input_labels = (float*)malloc(requiredMemsizeForLabel * sizeof(float));
 
@@ -157,13 +215,14 @@ int main() {
     read_labels(nameOfLabelFile, input_labels);
 
     // Cac ma tran trong so
-    int inputLayerSize = 785;
-    int firstHiddenLayerSize = 129;
-    int secondHiddenLayerSize = 129;
+    int inputLayerSize = 784;
+    int firstHiddenLayerSize = 128;
+    int secondHiddenLayerSize = 128;
     int lastHiddenLayerSize = 10;
 
-    unsigned int sizeOfFirstWeight = inputLayerSize * (firstHiddenLayerSize - 1);
-    unsigned int sizeOfSecondWeight = firstHiddenLayerSize * (secondHiddenLayerSize - 1);
+    // Them 1 thay cho bias
+    unsigned int sizeOfFirstWeight = inputLayerSize * firstHiddenLayerSize;
+    unsigned int sizeOfSecondWeight = firstHiddenLayerSize * secondHiddenLayerSize;
     unsigned int sizeOfLastWeight = secondHiddenLayerSize * lastHiddenLayerSize;
 
     float *firstHiddenLayerWeight = NULL;
@@ -173,6 +232,19 @@ int main() {
     firstHiddenLayerWeight = (float*)malloc(sizeOfFirstWeight * sizeof(float));
     secondHiddenLayerWeight = (float*)malloc(sizeOfSecondWeight * sizeof(float));
     lastHiddenLayerWeight = (float*)malloc(sizeOfLastWeight * sizeof(float));
+
+    // Khoi tao bias
+    float* firstBiases = NULL;
+    float* secondBiases = NULL;
+    float* lastBiases = NULL;
+
+    firstBiases = (float*)malloc(firstHiddenLayerSize * sizeof(float));
+    secondBiases = (float*)malloc(secondHiddenLayerSize * sizeof(float));
+    lastBiases = (float*)malloc(lastHiddenLayerSize * sizeof(float));
+
+    initialize_biases(firstBiases, firstHiddenLayerSize);
+    initialize_biases(secondBiases, secondHiddenLayerSize);
+    initialize_biases(lastBiases, lastHiddenLayerSize);
 
     // Ma tran luu tru cac ket qua qua tung lop
     float* firstLayerResult = NULL;
@@ -187,20 +259,15 @@ int main() {
     secondLayerResult = (float*)malloc(sizeOfSecondLayerResult * sizeof(float));
     lastLayerResult = (float*)malloc(sizeOfLastLayerResult * sizeof(float));
     
-    // Gan cot 0 cua cac ma tran ket qua voi gia tri mot
-    for (int i = 0 ; i < number_of_images; i++) {
-        firstLayerResult[i * firstHiddenLayerSize] = 1;
-        secondLayerResult[i * secondHiddenLayerSize] = 1;
-    }
 
     // Khoi tao trong so cho weight
-    initialize_weights(firstHiddenLayerWeight,inputLayerSize,firstHiddenLayerSize - 1);
-    initialize_weights(secondHiddenLayerWeight, firstHiddenLayerSize, secondHiddenLayerSize - 1);
+    initialize_weights(firstHiddenLayerWeight,inputLayerSize,firstHiddenLayerSize);
+    initialize_weights(secondHiddenLayerWeight, firstHiddenLayerSize, secondHiddenLayerSize);
     initialize_weights(lastHiddenLayerWeight, secondHiddenLayerSize, lastHiddenLayerSize);
 
-    forwardNN(input_data, firstHiddenLayerWeight, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
-    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize);
+    forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
+    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize);
 
     for (int i = 0; i < 5; i++) {
         for (int j = 0; j < lastHiddenLayerSize; j++) {
@@ -211,25 +278,5 @@ int main() {
 
     softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
 
-    for (int i = 0; i < 5; i++) {
-        float maxFloat = 0;
-        int maxIndex;
-        for (int j = 0; j < lastHiddenLayerSize; j++) {
-            if (maxFloat < lastLayerResult[i*lastHiddenLayerSize + j]) {
-                maxFloat = lastLayerResult[i*lastHiddenLayerSize + j];
-                maxIndex = j;
-            }
-        }
-        cout << "Image: " << i << endl;
-        cout << "Label: " << maxIndex << endl;
-    }
 
-    free(input_data);
-    free(input_labels);
-    free(firstHiddenLayerWeight);
-    free(secondHiddenLayerWeight);
-    free(lastHiddenLayerWeight);
-    free(firstLayerResult);
-    free(secondLayerResult);
-    free(lastLayerResult);
 }
