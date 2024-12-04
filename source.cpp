@@ -2,6 +2,7 @@
 #include<fstream>
 #include<string>
 #include<math.h>
+#define LEARNING_RATE 0.1
 
 using namespace std;
 
@@ -374,16 +375,16 @@ int main() {
 
     // Cap nhat trong so
     // Layer 3
-    updateWeights(lastHiddenLayerWeight, lastGradient, 0.1, secondHiddenLayerSize, lastHiddenLayerSize);
-    updateBias(lastBiases, thirdBiasGradient, 0.1,lastHiddenLayerSize);
+    updateWeights(lastHiddenLayerWeight, lastGradient, LEARNING_RATE, secondHiddenLayerSize, lastHiddenLayerSize);
+    updateBias(lastBiases, thirdBiasGradient, LEARNING_RATE,lastHiddenLayerSize);
 
     // Layer 2
-    updateWeights(secondHiddenLayerWeight, secondGradient, 0.1, firstHiddenLayerSize, secondHiddenLayerSize);
-    updateBias(secondBiases, secondBiasGradient, 0.1,secondHiddenLayerSize);
+    updateWeights(secondHiddenLayerWeight, secondGradient, LEARNING_RATE, firstHiddenLayerSize, secondHiddenLayerSize);
+    updateBias(secondBiases, secondBiasGradient, LEARNING_RATE,secondHiddenLayerSize);
 
     //layer 1
-    updateWeights(firstHiddenLayerWeight, firstGradient, 0.1, inputLayerSize, firstHiddenLayerSize);
-    updateBias(firstBiases, firstBiasGradient, 0.1, firstHiddenLayerSize);
+    updateWeights(firstHiddenLayerWeight, firstGradient, LEARNING_RATE, inputLayerSize, firstHiddenLayerSize);
+    updateBias(firstBiases, firstBiasGradient, LEARNING_RATE, firstHiddenLayerSize);
 
 
 
