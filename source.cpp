@@ -2,7 +2,8 @@
 #include<fstream>
 #include<string>
 #include<math.h>
-#define LEARNING_RATE 0.1
+#define LEARNING_RATE 0.3
+#define NUM_EPOCH 10
 
 using namespace std;
 
@@ -18,7 +19,7 @@ int reverseInt (unsigned int i)
     return ((unsigned int)c1 << 24) + ((unsigned int)c2 << 16) + ((unsigned int)c3 << 8) + c4;
 }
 
-void read_mnist(string filename, float* &inputData, unsigned int& number_of_images, unsigned int& n_rows, unsigned int& n_cols)
+void read_mnist(string filename, double* &inputData, unsigned int& number_of_images, unsigned int& n_rows, unsigned int& n_cols)
 {   
     ifstream file (filename);
     if (file.is_open())
@@ -38,7 +39,7 @@ void read_mnist(string filename, float* &inputData, unsigned int& number_of_imag
         cout << "Number of rows: " << n_rows << endl;
         cout  << "Number of cols: " << n_cols << endl; 
         unsigned int required_mem_size = number_of_images * (n_rows * n_cols);
-        inputData = (float*)malloc(required_mem_size * sizeof(int));
+        inputData = (double*)malloc(required_mem_size * sizeof(double));
         for(int i=0;i<number_of_images;++i)
         {
             inputData[i*n_cols*n_rows] = 1;
@@ -49,7 +50,7 @@ void read_mnist(string filename, float* &inputData, unsigned int& number_of_imag
                     unsigned char temp=0;
                     file.read((char*)&temp,sizeof(temp));
                     // Doc tung pixel
-                    inputData[i*n_rows*n_cols + r * n_cols + c] = temp;
+                    inputData[i*n_rows*n_cols + r * n_cols + c] = double(temp);
                 }
 
             }
@@ -57,7 +58,7 @@ void read_mnist(string filename, float* &inputData, unsigned int& number_of_imag
     }
 }
 
-void read_labels(string filename, float* inputLabel) {
+void read_labels_one_hot(string filename, double* inputLabel) {
     ifstream file (filename);
     if (file.is_open()) {
         unsigned int magic_number = 0;
@@ -79,15 +80,37 @@ void read_labels(string filename, float* inputLabel) {
     file.close();
 }
 
-float relu(float x) {
-    float result = (x > 0) ? x : 0;
+void read_labels(string filename, double* input_labels) {
+    ifstream file (filename);
+    if (file.is_open()) {
+        unsigned int magic_number = 0;
+        unsigned int number_of_label = 0;
+        file.read((char*)&magic_number, sizeof(magic_number));
+        magic_number = reverseInt(magic_number);
+        file.read((char*)&number_of_label, sizeof(number_of_label));
+        number_of_label = reverseInt(number_of_label);
+        cout << "Magic number: " << magic_number << endl;
+        cout << "Number of label: " << number_of_label << endl;
+
+        for (int i = 0; i < number_of_label; i++) {
+            // One hot cua cac label
+            unsigned char temp=0;
+            file.read((char*)&temp,sizeof(temp));
+            input_labels[i] = temp;
+        }
+    }
+    file.close();
+}
+
+double relu(double x) {
+    double result = (x > 0) ? x : 0;
     return result;
 }
 
-void forwardNN(float* input, float* weight, float* bias, float* output, int inputRows, int inputCols, int outputCols, bool usedActivate = true) {
+void forwardNN(double* input, double* weight, double* bias, double* output, int inputRows, int inputCols, int outputCols, bool usedActivate = true) {
     for (int i = 0; i < inputRows; i++) {
         for (int j = 0; j < outputCols; j++) {
-            float temp = 0;
+            double temp = 0;
             for (int k = 0; k < inputCols; k++) {
                 temp += input[i * inputCols + k] * weight[k * outputCols + j];
             }
@@ -101,12 +124,12 @@ void forwardNN(float* input, float* weight, float* bias, float* output, int inpu
     }
 }
 
-void softmax(float* input, int rows, int cols) {
+void softmax(double* input, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
-        float sum = 0.0;
+        double sum = 0.0;
 
         for (int j = 0; j < cols; j++) {
-            float temp = exp(input[i * cols + j]);
+            double temp = exp(input[i * cols + j]);
             sum += temp;
             input[i*cols + j] = temp;
         }
@@ -117,21 +140,21 @@ void softmax(float* input, int rows, int cols) {
     }
 }
 
-void initialize_weights(float* weights, int rows, int cols)  {
+void initialize_weights(double* weights, int rows, int cols)  {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
-            weights[i * cols + j] = ((float)rand())/RAND_MAX;
+            weights[i * cols + j] = ((rand() / (double)RAND_MAX) * 0.001) - 0.0005;
         }
     }
 }
 
-void initialize_biases(float* bias, int rows) {
+void initialize_biases(double* bias, int rows) {
     for (int i = 0; i < rows; i++) {
-        bias[i] = float(rand()) / RAND_MAX;
+        bias[i] = ((rand() / (double)RAND_MAX) * 0.001) - 0.0005;
     }
 }
 
-void calculateLastDelta(float* y_pred, float* y, float* delta, int rows, int cols) {
+void calculateLastDelta(double* y_pred, double* y, double* delta, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             delta[i*cols + j] = y_pred[i*cols + j] - y[i*cols + j];
@@ -139,10 +162,10 @@ void calculateLastDelta(float* y_pred, float* y, float* delta, int rows, int col
     }
 }
 
-void multiplyMatrix(float* matrix_a, float* matrix_b, float* result,int rows_a, int cols_a, int cols_b) {
+void multiplyMatrix(double* matrix_a, double* matrix_b, double* result,int rows_a, int cols_a, int cols_b) {
     for (int i = 0; i< rows_a; i++) {
         for (int j = 0; j < cols_b; j++) {
-            float temp = 0.0;
+            double temp = 0.0;
             for (int k = 0; k < cols_a; k++) {
                 temp += matrix_a[i*cols_a + k] * matrix_b[k * cols_b + j];
             }
@@ -151,7 +174,7 @@ void multiplyMatrix(float* matrix_a, float* matrix_b, float* result,int rows_a, 
     }
 }
 
-void transposeMatrix(float* inputMatrix, float* outputMatrix, int rows, int cols) {
+void transposeMatrix(double* inputMatrix, double* outputMatrix, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             outputMatrix[j * rows + i] = inputMatrix[i * cols + j];
@@ -159,7 +182,7 @@ void transposeMatrix(float* inputMatrix, float* outputMatrix, int rows, int cols
     }
 }
 
-void relu_derivative(float* input, float* output, int rows, int cols) {
+void relu_derivative(double* input, double* output, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             if (input[i*cols + j] > 0) {
@@ -171,7 +194,7 @@ void relu_derivative(float* input, float* output, int rows, int cols) {
     }
 }
 
-void multiplyMatrixElementWise(float* matrix_a, float* matrix_b, float* result, int rows, int cols) {
+void multiplyMatrixElementWise(double* matrix_a, double* matrix_b, double* result, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             result[i * cols+ j] = matrix_a[i * cols + j] * matrix_b[i*cols + j];
@@ -179,9 +202,9 @@ void multiplyMatrixElementWise(float* matrix_a, float* matrix_b, float* result, 
     }
 }
 
-void gradientForBias(float* delta, float* gradient,int rows, int cols) {
+void gradientForBias(double* delta, double* gradient,int rows, int cols) {
     for (int c = 0; c < cols; c++) {
-        float temp = 0;
+        double temp = 0;
         for (int r = 0; r < rows; r++) {
             temp += delta[r*cols+c];
         }
@@ -189,7 +212,7 @@ void gradientForBias(float* delta, float* gradient,int rows, int cols) {
     }
 }
 
-void updateWeights(float* weights, float* gradient, float lr, int rows, int cols) {
+void updateWeights(double* weights, double* gradient, double lr, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
             weights[i * cols +j] -= lr * gradient[i*cols + j];
@@ -197,9 +220,41 @@ void updateWeights(float* weights, float* gradient, float lr, int rows, int cols
     }
 }
 
-void updateBias(float* bias, float* gradient, float lr, int layerSize) {
+void updateBias(double* bias, double* gradient, double lr, int layerSize) {
     for (int i = 0; i < layerSize; i++) {
         bias[i] -= lr * gradient[i];
+    }
+}
+
+double crossEntropy(double* y_pred, double* groundTruthOneHot, int rows, int cols) {
+    double result = 0;
+
+    for (int i = 0; i < rows; i++) {
+        double sumImage = 0;
+        for (int j = 0; j < cols; j++) {
+            sumImage += groundTruthOneHot[i * cols + j]*log(y_pred[i * cols + j]);
+        }
+        result += -sumImage;
+    }
+
+    result /= rows;
+    return result;
+}
+
+// Nhan nghich dao ma tran a voi ma tran delta
+// A_T * B
+// rows_a = rows_b
+void multiplyTransposeMaTrixA(double* matrix_a, double* matrix_b, double* result, int rows_a, int cols_a, int cols_b) {
+    for (int i = 0; i < cols_a; i++) {
+        for (int j = 0; j < cols_b; j++) {
+            double temp = 0.0;
+
+            for (int k = 0; k < rows_a; k++) {
+                temp += matrix_a[k * cols_a + i] * matrix_b[k * cols_b + j];
+            }
+
+            result[i * cols_b + j] = temp;
+        }
     }
 }
 
@@ -210,183 +265,233 @@ int main() {
     string nameOfLabelFile = "train-labels-idx1-ubyte";
 
     // Input data
-    float* input_data = NULL;
-    float* input_labels = NULL;
+    double* input_data = NULL;
+    double* input_labels = NULL;
 
     // Doc Du lieu
     unsigned int number_of_images, n_rows, n_cols;
     read_mnist(filename, input_data, number_of_images, n_rows, n_cols);
 
     unsigned int requiredMemsizeForLabel = number_of_images * 10;
-    input_labels = (float*)malloc(requiredMemsizeForLabel * sizeof(float));
+    input_labels = (double*)malloc(requiredMemsizeForLabel * sizeof(double));
 
     for (int i = 0; i < requiredMemsizeForLabel; i++) {
       input_labels[i] = 0;
     }
 
-    read_labels(nameOfLabelFile, input_labels);
+    read_labels_one_hot(nameOfLabelFile, input_labels);
 
     // Cac ma tran trong so
+
     int inputLayerSize = 784;
     int firstHiddenLayerSize = 128;
     int secondHiddenLayerSize = 128;
     int lastHiddenLayerSize = 10;
 
-    // Them 1 thay cho bias
+    // Khoi tao trong so
     unsigned int sizeOfFirstWeight = inputLayerSize * firstHiddenLayerSize;
     unsigned int sizeOfSecondWeight = firstHiddenLayerSize * secondHiddenLayerSize;
     unsigned int sizeOfLastWeight = secondHiddenLayerSize * lastHiddenLayerSize;
 
-    float *firstHiddenLayerWeight = NULL;
-    float *secondHiddenLayerWeight = NULL;
-    float *lastHiddenLayerWeight = NULL;
+    double *firstHiddenLayerWeight = NULL;
+    double *secondHiddenLayerWeight = NULL;
+    double *lastHiddenLayerWeight = NULL;
 
-    firstHiddenLayerWeight = (float*)malloc(sizeOfFirstWeight * sizeof(float));
-    secondHiddenLayerWeight = (float*)malloc(sizeOfSecondWeight * sizeof(float));
-    lastHiddenLayerWeight = (float*)malloc(sizeOfLastWeight * sizeof(float));
+    firstHiddenLayerWeight = (double*)malloc(sizeOfFirstWeight * sizeof(double));
+    secondHiddenLayerWeight = (double*)malloc(sizeOfSecondWeight * sizeof(double));
+    lastHiddenLayerWeight = (double*)malloc(sizeOfLastWeight * sizeof(double));
+
+    initialize_weights(firstHiddenLayerWeight,inputLayerSize,firstHiddenLayerSize);
+    initialize_weights(secondHiddenLayerWeight, firstHiddenLayerSize, secondHiddenLayerSize);
+    initialize_weights(lastHiddenLayerWeight, secondHiddenLayerSize, lastHiddenLayerSize);
 
     // Khoi tao bias
-    float* firstBiases = NULL;
-    float* secondBiases = NULL;
-    float* lastBiases = NULL;
+    double* firstBiases = NULL;
+    double* secondBiases = NULL;
+    double* lastBiases = NULL;
 
-    firstBiases = (float*)malloc(firstHiddenLayerSize * sizeof(float));
-    secondBiases = (float*)malloc(secondHiddenLayerSize * sizeof(float));
-    lastBiases = (float*)malloc(lastHiddenLayerSize * sizeof(float));
+    firstBiases = (double*)malloc(firstHiddenLayerSize * sizeof(double));
+    secondBiases = (double*)malloc(secondHiddenLayerSize * sizeof(double));
+    lastBiases = (double*)malloc(lastHiddenLayerSize * sizeof(double));
 
     initialize_biases(firstBiases, firstHiddenLayerSize);
     initialize_biases(secondBiases, secondHiddenLayerSize);
     initialize_biases(lastBiases, lastHiddenLayerSize);
 
     // Ma tran luu tru cac ket qua qua tung lop
-    float* firstLayerResult = NULL;
-    float* secondLayerResult = NULL;
-    float* lastLayerResult = NULL;
+    double* firstLayerResult = NULL;
+    double* secondLayerResult = NULL;
+    double* lastLayerResult = NULL;
 
     int sizeOfFirstLayerResult = number_of_images * firstHiddenLayerSize;
     int sizeOfSecondLayerResult = number_of_images * secondHiddenLayerSize;
     int sizeOfLastLayerResult = number_of_images * lastHiddenLayerSize;
 
-    firstLayerResult = (float*)malloc(sizeOfFirstLayerResult * sizeof(float));
-    secondLayerResult = (float*)malloc(sizeOfSecondLayerResult * sizeof(float));
-    lastLayerResult = (float*)malloc(sizeOfLastLayerResult * sizeof(float));
-    
+    firstLayerResult = (double*)malloc(sizeOfFirstLayerResult * sizeof(double));
+    secondLayerResult = (double*)malloc(sizeOfSecondLayerResult * sizeof(double));
+    lastLayerResult = (double*)malloc(sizeOfLastLayerResult * sizeof(double));
 
-    // Khoi tao trong so cho weight
-    initialize_weights(firstHiddenLayerWeight,inputLayerSize,firstHiddenLayerSize);
-    initialize_weights(secondHiddenLayerWeight, firstHiddenLayerSize, secondHiddenLayerSize);
-    initialize_weights(lastHiddenLayerWeight, secondHiddenLayerSize, lastHiddenLayerSize);
-
-    forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
-    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
-
-
-    softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
-
-    // backprop
-
-    float* lastDelta = NULL;
-    float* secondDelta = NULL;
-    float* firstDelta = NULL;
+    // Tao ma tran luu tru delta
+    double* lastDelta = NULL;
+    double* secondDelta = NULL;
+    double* firstDelta = NULL;
 
     unsigned int lastDeltaSize = number_of_images * lastHiddenLayerSize;
     unsigned int secondDeltaSize = number_of_images * secondHiddenLayerSize;
     unsigned int firstDeltaSize = number_of_images * firstHiddenLayerSize;
 
-    lastDelta = (float*)malloc(lastDeltaSize * sizeof(float));
-    secondDelta = (float*)malloc(secondDeltaSize * sizeof(float));
-    firstDelta = (float*)malloc(firstDeltaSize *sizeof(float));
+    lastDelta = (double*)malloc(lastDeltaSize * sizeof(double));
+    secondDelta = (double*)malloc(secondDeltaSize * sizeof(double));
+    firstDelta = (double*)malloc(firstDeltaSize *sizeof(double));
+    
 
-    float* lastGradient = NULL;
-    float* secondGradient = NULL;
-    float* firstGradient = NULL;
+    // Cap phat bo nho cho ma tran gradient
+    double* lastGradient = NULL;
+    double* secondGradient = NULL;
+    double* firstGradient = NULL;
 
-    lastGradient = (float*)malloc(sizeOfLastWeight * sizeof(float));
-    secondGradient = (float*)malloc(sizeOfSecondWeight * sizeof(float));
-    firstGradient = (float*)malloc(sizeOfFirstWeight * sizeof(float));
+    lastGradient = (double*)malloc(sizeOfLastWeight * sizeof(double));
+    secondGradient = (double*)malloc(sizeOfSecondWeight * sizeof(double));
+    firstGradient = (double*)malloc(sizeOfFirstWeight * sizeof(double));
 
-    float* transposedSecondResult = NULL;
-    float* transposedFirstResult = NULL;
-    float* transposedLastWeight = NULL;
-    float* transposedSecondWeight = NULL;
+    // Cap phat bo nho cho ma tran chuyen vi
+    
+    double* transposedSecondResult = NULL;
+    double* transposedFirstResult = NULL;
+    double* transposedLastWeight = NULL;
+    double* transposedSecondWeight = NULL;
+    double* transposedInputMatrix = NULL;
 
-    transposedSecondResult = (float*)malloc(sizeOfSecondLayerResult * sizeof(float));
-    transposedFirstResult = (float*)malloc(sizeOfFirstLayerResult * sizeof(float));
-    transposedLastWeight = (float*)malloc(sizeOfLastWeight * sizeof(float));
-    transposedSecondWeight = (float*)malloc(sizeOfSecondWeight * sizeof(float));
+    transposedSecondResult = (double*)malloc(sizeOfSecondLayerResult * sizeof(double));
+    transposedFirstResult = (double*)malloc(sizeOfFirstLayerResult * sizeof(double));
+    transposedLastWeight = (double*)malloc(sizeOfLastWeight * sizeof(double));
+    transposedSecondWeight = (double*)malloc(sizeOfSecondWeight * sizeof(double));
+    transposedInputMatrix = (double*)malloc((number_of_images * inputLayerSize) * sizeof(double));
 
-    // Tinh transpose truoc
-    transposeMatrix(secondLayerResult, transposedSecondResult, number_of_images, secondHiddenLayerSize);
-    transposeMatrix(firstLayerResult, transposedFirstResult, number_of_images, firstHiddenLayerSize);
-    transposeMatrix(lastHiddenLayerWeight, transposedLastWeight, secondHiddenLayerSize, lastHiddenLayerSize);
-    transposeMatrix(secondHiddenLayerWeight, transposedSecondWeight, firstHiddenLayerSize, secondHiddenLayerSize);
 
-    calculateLastDelta(lastLayerResult, input_labels,lastDelta, number_of_images, lastHiddenLayerSize);
+    // Cap phat bo nho cho cac ma tran dao ham relu
+    double* reluDerivativeSecondMatrix = NULL;
+    double* reluDerivativeFirstMatrix = NULL;
 
-    // Tinh cho gradient lop cuoi
-    multiplyMatrix(transposedSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, number_of_images, lastHiddenLayerSize);
-
-    // Khai bao cac ma tran cho dao ham relu
-    float* reluDerivativeSecondMatrix = NULL;
-    float* reluDerivativeFirstMatrix = NULL;
-
-    reluDerivativeSecondMatrix = (float*)malloc(sizeOfSecondLayerResult * sizeof(float));
-    reluDerivativeFirstMatrix = (float*)malloc(sizeOfFirstLayerResult * sizeof(float));
-
-    relu_derivative(secondLayerResult, reluDerivativeSecondMatrix, number_of_images, secondHiddenLayerSize);
-    relu_derivative(firstLayerResult, reluDerivativeFirstMatrix, number_of_images, firstHiddenLayerSize);
+    reluDerivativeSecondMatrix = (double*)malloc(sizeOfSecondLayerResult * sizeof(double));
+    reluDerivativeFirstMatrix = (double*)malloc(sizeOfFirstLayerResult * sizeof(double));
 
     // Gradient cho bias
-    float* firstBiasGradient = NULL;
-    float* secondBiasGradient = NULL;
-    float* thirdBiasGradient = NULL;
+    double* firstBiasGradient = NULL;
+    double* secondBiasGradient = NULL;
+    double* thirdBiasGradient = NULL;
 
-    firstBiasGradient = (float*)malloc(firstHiddenLayerSize * sizeof(float));
-    secondBiasGradient = (float*)malloc(secondHiddenLayerSize * sizeof(float));
-    thirdBiasGradient = (float*)malloc(lastHiddenLayerSize * sizeof(float));
+    firstBiasGradient = (double*)malloc(firstHiddenLayerSize * sizeof(double));
+    secondBiasGradient = (double*)malloc(secondHiddenLayerSize * sizeof(double));
+    thirdBiasGradient = (double*)malloc(lastHiddenLayerSize * sizeof(double));
 
-    gradientForBias(lastDelta, thirdBiasGradient, number_of_images, lastHiddenLayerSize);
+    // Khoi tao mang chua do loi
+    double* errorList = (double*) malloc(NUM_EPOCH * sizeof(double));
 
-    // Cho hidden layer 2
+    for (int epoch = 0; epoch < NUM_EPOCH; epoch++) {
+        errorList[epoch] = 0;
+    }
 
-    //tinh delta
-    multiplyMatrix(lastDelta, transposedLastWeight, secondDelta, number_of_images, lastHiddenLayerSize, secondHiddenLayerSize);
-    multiplyMatrixElementWise(secondDelta, reluDerivativeSecondMatrix, secondDelta, number_of_images, secondHiddenLayerSize);
+    // Ground Truth Label
+    double* labels = (double*)malloc(number_of_images*sizeof(double));
+    read_labels(nameOfLabelFile, labels);
 
-    //tinh gradient 
-    multiplyMatrix(transposedFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, number_of_images, secondHiddenLayerSize);
-    gradientForBias(secondDelta, secondBiasGradient, number_of_images, secondHiddenLayerSize);
+    for (int label = 0; label < 10; label++) {
+        unsigned int count = 0;
+        for (int image = 0; image < number_of_images; image++) {
+            if (labels[image] == label) {
+                count++;
+            }
+        }
 
-    // Cho hidden layer 1
+        cout << "Label: " << label <<", Count: " << count << endl;
+    }
 
-    //tinh delta 
-    multiplyMatrix(secondDelta, transposedSecondWeight, firstDelta, number_of_images, secondHiddenLayerSize, firstHiddenLayerSize);
-    multiplyMatrixElementWise(firstDelta, reluDerivativeFirstMatrix, firstDelta, number_of_images, firstHiddenLayerSize);
+    for (int i = 0; i < 5; i++) {
+        for (int j = 0; j < 5; j++) {
+            cout << firstHiddenLayerWeight[i*firstHiddenLayerSize + j] << ' ';
+        }
+        cout << endl;
+    }
+    cout << endl;
 
-    // tinh gradient 
-    // tinh chuyen vi cua ma tran dau vao
-    float* transposedInputMatrix = NULL;
+    //===========================================================================================================================
 
-    transposedInputMatrix = (float*)malloc((number_of_images * inputLayerSize) * sizeof(float));
-    transposeMatrix(input_data, transposedInputMatrix, number_of_images, inputLayerSize);
-    multiplyMatrix(transposedInputMatrix, firstDelta, firstGradient, inputLayerSize, number_of_images, firstHiddenLayerSize);
-    gradientForBias(firstDelta, firstBiasGradient, number_of_images, firstHiddenLayerSize);
+    for (int i = 0; i < NUM_EPOCH; i++) {
+        // Forward qua 3 lop
 
-    // Cap nhat trong so
-    // Layer 3
-    updateWeights(lastHiddenLayerWeight, lastGradient, LEARNING_RATE, secondHiddenLayerSize, lastHiddenLayerSize);
-    updateBias(lastBiases, thirdBiasGradient, LEARNING_RATE,lastHiddenLayerSize);
+        forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
+        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
-    // Layer 2
-    updateWeights(secondHiddenLayerWeight, secondGradient, LEARNING_RATE, firstHiddenLayerSize, secondHiddenLayerSize);
-    updateBias(secondBiases, secondBiasGradient, LEARNING_RATE,secondHiddenLayerSize);
+        // Goi ham softmax cho ket qua cua layer cuoi
+        softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
+        for (int image = 0; image < 5; image++) {
+            for(int col = 0; col < 10; col++) {
+                cout << lastLayerResult[image * lastHiddenLayerSize + col] << ' ';
+            }
+            cout << endl;
+        }
 
-    //layer 1
-    updateWeights(firstHiddenLayerWeight, firstGradient, LEARNING_RATE, inputLayerSize, firstHiddenLayerSize);
-    updateBias(firstBiases, firstBiasGradient, LEARNING_RATE, firstHiddenLayerSize);
+        // backprop
 
+        // Tinh transpose truoc
 
+        calculateLastDelta(lastLayerResult, input_labels,lastDelta, number_of_images, lastHiddenLayerSize);
+
+        // Tinh cho gradient lop cuoi
+        multiplyTransposeMaTrixA(secondLayerResult, lastDelta, lastGradient, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize);
+
+        relu_derivative(secondLayerResult, reluDerivativeSecondMatrix, number_of_images, secondHiddenLayerSize);
+        relu_derivative(firstLayerResult, reluDerivativeFirstMatrix, number_of_images, firstHiddenLayerSize);
+
+        //gradientForBias(lastDelta, thirdBiasGradient, number_of_images, lastHiddenLayerSize);
+
+        // Cho hidden layer 2
+
+        //tinh delta
+        multiplyMatrix(lastDelta, transposedLastWeight, secondDelta, number_of_images, lastHiddenLayerSize, secondHiddenLayerSize);
+        multiplyMatrixElementWise(secondDelta, reluDerivativeSecondMatrix, secondDelta, number_of_images, secondHiddenLayerSize);
+
+        //tinh gradient 
+        multiplyMatrix(transposedFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, number_of_images, secondHiddenLayerSize);
+        //gradientForBias(secondDelta, secondBiasGradient, number_of_images, secondHiddenLayerSize);
+
+        // Cho hidden layer 1
+
+        //tinh delta 
+        multiplyMatrix(secondDelta, transposedSecondWeight, firstDelta, number_of_images, secondHiddenLayerSize, firstHiddenLayerSize);
+        multiplyMatrixElementWise(firstDelta, reluDerivativeFirstMatrix, firstDelta, number_of_images, firstHiddenLayerSize);
+
+        // tinh gradient 
+        // tinh chuyen vi cua ma tran dau vao
+        multiplyMatrix(transposedInputMatrix, firstDelta, firstGradient, inputLayerSize, number_of_images, firstHiddenLayerSize);
+        //gradientForBias(firstDelta, firstBiasGradient, number_of_images, firstHiddenLayerSize);
+
+        // Cap nhat trong so
+        // Layer 3
+        updateWeights(lastHiddenLayerWeight, lastGradient, LEARNING_RATE, secondHiddenLayerSize, lastHiddenLayerSize);
+        //updateBias(lastBiases, thirdBiasGradient, LEARNING_RATE,lastHiddenLayerSize);
+
+        // Layer 2
+        updateWeights(secondHiddenLayerWeight, secondGradient, LEARNING_RATE, firstHiddenLayerSize, secondHiddenLayerSize);
+        //updateBias(secondBiases, secondBiasGradient, LEARNING_RATE,secondHiddenLayerSize);
+
+        //layer 1
+        updateWeights(firstHiddenLayerWeight, firstGradient, LEARNING_RATE, inputLayerSize, firstHiddenLayerSize);
+        //updateBias(firstBiases, firstBiasGradient, LEARNING_RATE, firstHiddenLayerSize);
+
+        double err = crossEntropy(lastLayerResult, input_labels, number_of_images, lastHiddenLayerSize);
+        errorList[i] = err;
+    }
+
+    //##############################################################################################################################################
+
+    for (int i = 0; i < NUM_EPOCH; i++) {
+        printf("%f ", errorList[i]);
+    }
+    cout << endl;
+    cout << endl;
 
     free(transposedInputMatrix);
     free(input_data);
@@ -415,4 +520,6 @@ int main() {
     free(firstBiasGradient);
     free(secondBiasGradient);
     free(thirdBiasGradient);
+    free(errorList);
+    free(labels);
 }
