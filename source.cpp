@@ -2,8 +2,8 @@
 #include<fstream>
 #include<string>
 #include<math.h>
-#define LEARNING_RATE 0.3
-#define NUM_EPOCH 10
+#define LEARNING_RATE 0.5
+#define NUM_EPOCH 20
 
 using namespace std;
 
@@ -258,6 +258,27 @@ void multiplyTransposeMaTrixA(double* matrix_a, double* matrix_b, double* result
     }
 }
 
+double accuracy(double* lastLayerResult, double* labels, int rows, int cols) {
+    double count = 0;
+    for (int r = 0; r < rows; r++) {
+        double maxProp = lastLayerResult[r * cols];
+        int label = 0;
+
+        for (int c = 0; c < cols; c++) {
+            if (maxProp < lastLayerResult[r * cols + c]) {
+                maxProp = lastLayerResult[r * cols + c];
+                label = c;
+            }
+        }
+
+        if (labels[r] == double(label)) {
+            count++;
+        }
+    }
+    double result = count / rows;
+    return result;
+}
+
 int main() {
     srand(static_cast<unsigned>(time(0)));
     // Data file
@@ -426,12 +447,6 @@ int main() {
 
         // Goi ham softmax cho ket qua cua layer cuoi
         softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
-        for (int image = 0; image < 5; image++) {
-            for(int col = 0; col < 10; col++) {
-                cout << lastLayerResult[image * lastHiddenLayerSize + col] << ' ';
-            }
-            cout << endl;
-        }
 
         // backprop
 
@@ -483,6 +498,8 @@ int main() {
 
         double err = crossEntropy(lastLayerResult, input_labels, number_of_images, lastHiddenLayerSize);
         errorList[i] = err;
+
+        cout << "Cross Entropy: " << err <<", Epoch:" << i << endl;
     }
 
     //##############################################################################################################################################
@@ -492,6 +509,13 @@ int main() {
     }
     cout << endl;
     cout << endl;
+    forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
+    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
+
+    // Goi ham softmax cho ket qua cua layer cuoi
+    softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
+    cout << "Accuracy: " << accuracy(lastLayerResult, labels, number_of_images, lastHiddenLayerSize);
 
     free(transposedInputMatrix);
     free(input_data);
