@@ -2,8 +2,11 @@
 #include<fstream>
 #include<string>
 #include<math.h>
-#define LEARNING_RATE 0.5
-#define NUM_EPOCH 20
+#define LEARNING_RATE 1.0
+#define NUM_EPOCH 3
+#define TRAIN_RATE 0.8
+#define VAL_RATE 0.1
+#define TEST_RATE 0.1
 
 using namespace std;
 
@@ -140,11 +143,14 @@ void softmax(double* input, int rows, int cols) {
     }
 }
 
-void initialize_weights(double* weights, int rows, int cols)  {
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            weights[i * cols + j] = ((rand() / (double)RAND_MAX) * 0.001) - 0.0005;
-        }
+void initialize_weights(double* weights, int n_in, int n_out)  {
+    double stddev = sqrt(2.0 / n_in); // Standard deviation based on He initialization formula
+    for (int i = 0; i < n_in * n_out; i++) {
+        // Generate random weight from a normal distribution (mean 0, variance stddev^2)
+        double u1 = (double)rand() / RAND_MAX;
+        double u2 = (double)rand() / RAND_MAX;
+        double z = sqrt(-2.0 * log(u1)) * cos(2 * M_PI * u2); // Box-Muller transform
+        weights[i] = z * stddev;
     }
 }
 
@@ -279,6 +285,105 @@ double accuracy(double* lastLayerResult, double* labels, int rows, int cols) {
     return result;
 }
 
+// shuffle data
+
+void shuffle_data(double* data, double* one_hot_label, double* labels, int rows, int cols, int one_hot_cols) {
+    for (int row = rows - 1; row > 0; row--) {
+        int swap_row_index = rand() % (row + 1);
+
+        for (int col = 0; col < cols; col++) {
+            double temp = data[row * cols + col];
+            data[row * cols + col] = data[swap_row_index * cols + col];
+            data[swap_row_index * cols + col] = temp; 
+        }
+
+        // swap one hot label
+
+        for (int col = 0; col < one_hot_cols; col++) {
+            double temp = one_hot_label[row * one_hot_cols + col];
+            one_hot_label[row * one_hot_cols + col] = one_hot_label[swap_row_index * one_hot_cols + col];
+            one_hot_label[swap_row_index * one_hot_cols + col] = temp;
+        }
+
+        // swap label
+
+        double temp = labels[row];
+        labels[row] = labels[swap_row_index];
+        labels[swap_row_index] = temp;
+    }
+}
+
+// phan chia du lieu
+
+void split(double* data, double* one_hot_labels, double* labels, int rows, int cols, int one_hot_cols, \
+           double* train_data, double* train_one_hot, double* train_labels,\
+            double* val_data, double* val_one_hot, double* val_labels,\
+            double* test_data, double* test_one_hot, double* test_labels) {
+    int train_limit = TRAIN_RATE * rows;
+    int val_limit = (TRAIN_RATE + VAL_RATE) * rows;
+    int row = 0,train_index = 0, val_index = 0, test_index = 0;
+
+    while (row < train_limit) {
+        // copy data anh
+        for (int col = 0; col < cols; col++) {
+            train_data[train_index * cols + col] = data[row * cols + col];
+        }
+
+        // copy data one hot label
+        for (int col = 0; col < one_hot_cols; col++) {
+            train_one_hot[train_index * one_hot_cols + col] = one_hot_labels[row * one_hot_cols + col];
+        }
+
+        // copy label
+
+        train_labels[train_index] = labels[row];
+        row++;
+        train_index++;
+    }
+    
+    while (row < val_limit) {
+        // copy data anh
+        for (int col = 0; col < cols; col++) {
+            val_data[val_index * cols + col] = data[row * cols + col];
+        }
+
+        // copy data one hot label
+        for (int col = 0; col < one_hot_cols; col++) {
+            val_one_hot[val_index * one_hot_cols + col] = one_hot_labels[row * one_hot_cols + col];
+        }
+
+        // copy label
+
+        val_labels[val_index] = labels[row];
+        row++;
+        val_index++;
+    }
+
+    while (row < rows) {
+        // copy data anh
+        for (int col = 0; col < cols; col++) {
+            test_data[test_index * cols + col] = data[row * cols + col];
+        }
+
+        // copy data one hot label
+        for (int col = 0; col < one_hot_cols; col++) {
+            test_one_hot[test_index * one_hot_cols + col] = one_hot_labels[row * one_hot_cols + col];
+        }
+
+        // copy label
+
+        test_labels[test_index] = labels[row];
+        row++;
+        test_index++;
+    }
+}
+
+void devideMatrixToScalar(double* matrix, double scalar, int rows, int cols) {
+    for (int i = 0; i < rows * cols; i++) {
+        matrix[i] /= scalar;
+    }
+}
+
 int main() {
     srand(static_cast<unsigned>(time(0)));
     // Data file
@@ -292,6 +397,7 @@ int main() {
     // Doc Du lieu
     unsigned int number_of_images, n_rows, n_cols;
     read_mnist(filename, input_data, number_of_images, n_rows, n_cols);
+    devideMatrixToScalar(input_data, 255, number_of_images, 784);
 
     unsigned int requiredMemsizeForLabel = number_of_images * 10;
     input_labels = (double*)malloc(requiredMemsizeForLabel * sizeof(double));
@@ -308,6 +414,43 @@ int main() {
     int firstHiddenLayerSize = 128;
     int secondHiddenLayerSize = 128;
     int lastHiddenLayerSize = 10;
+
+    // Chia data
+    double* train_data = NULL;
+    double* train_one_hot_labels = NULL;
+    double* train_labels = NULL;
+
+    double* val_data = NULL;
+    double* val_one_hot_labels = NULL;
+    double* val_labels = NULL;
+
+    double* test_data = NULL;
+    double* test_one_hot_labels = NULL;
+    double* test_labels = NULL;
+
+    unsigned int sizeOfTrainData = TRAIN_RATE * number_of_images * inputLayerSize * sizeof(double);
+    unsigned int sizeOfTrainOneHot = TRAIN_RATE * number_of_images * lastHiddenLayerSize * sizeof(double);
+    unsigned int sizeOfTrainLabels = TRAIN_RATE * number_of_images * sizeof(double);
+
+    unsigned int sizeOfValData = VAL_RATE * number_of_images * inputLayerSize * sizeof(double);
+    unsigned int sizeOfValOneHot = VAL_RATE * number_of_images * lastHiddenLayerSize * sizeof(double);
+    unsigned int sizeOfValLabels = VAL_RATE * number_of_images * sizeof(double);
+
+    unsigned int sizeOfTestData = TEST_RATE * number_of_images * inputLayerSize * sizeof(double);
+    unsigned int sizeOfTestOneHot = TEST_RATE * number_of_images * lastHiddenLayerSize * sizeof(double);
+    unsigned int sizeOfTestLabels = TEST_RATE * number_of_images * sizeof(double);
+
+    train_data = (double*)malloc(sizeOfTrainData);
+    train_one_hot_labels = (double*)malloc(sizeOfTrainOneHot);
+    train_labels = (double*)malloc(sizeOfTrainLabels);
+
+    val_data = (double*)malloc(sizeOfValData);
+    val_one_hot_labels = (double*)malloc(sizeOfValOneHot);
+    val_labels = (double*)malloc(sizeOfValLabels);
+
+    test_data = (double*)malloc(sizeOfTestData);
+    test_one_hot_labels = (double*)malloc(sizeOfTestOneHot);
+    test_labels = (double*)malloc(sizeOfTestLabels);
 
     // Khoi tao trong so
     unsigned int sizeOfFirstWeight = inputLayerSize * firstHiddenLayerSize;
@@ -389,6 +532,8 @@ int main() {
     transposedSecondWeight = (double*)malloc(sizeOfSecondWeight * sizeof(double));
     transposedInputMatrix = (double*)malloc((number_of_images * inputLayerSize) * sizeof(double));
 
+    transposeMatrix(input_data, transposedInputMatrix, number_of_images, inputLayerSize);
+
 
     // Cap phat bo nho cho cac ma tran dao ham relu
     double* reluDerivativeSecondMatrix = NULL;
@@ -436,6 +581,10 @@ int main() {
     }
     cout << endl;
 
+    shuffle_data(input_data, input_labels, labels, number_of_images, inputLayerSize, lastHiddenLayerSize);
+    split(input_data, input_labels, labels, number_of_images, inputLayerSize, lastHiddenLayerSize, train_data, train_one_hot_labels, train_labels, val_data, val_one_hot_labels, val_labels, test_data, test_one_hot_labels, test_labels);
+
+    int numTrainSamples = TRAIN_RATE * number_of_images;
     //===========================================================================================================================
 
     for (int i = 0; i < NUM_EPOCH; i++) {
@@ -444,43 +593,48 @@ int main() {
         forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
         forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
         forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
-
         // Goi ham softmax cho ket qua cua layer cuoi
         softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
-
         // backprop
 
         // Tinh transpose truoc
+        transposeMatrix(secondLayerResult, transposedSecondResult, number_of_images, secondHiddenLayerSize);
+        transposeMatrix(firstLayerResult, transposedFirstResult, number_of_images, firstHiddenLayerSize);
 
-        calculateLastDelta(lastLayerResult, input_labels,lastDelta, number_of_images, lastHiddenLayerSize);
+        calculateLastDelta(lastLayerResult, input_labels, lastDelta, number_of_images, lastHiddenLayerSize);
 
         // Tinh cho gradient lop cuoi
-        multiplyTransposeMaTrixA(secondLayerResult, lastDelta, lastGradient, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize);
+        multiplyMatrix(transposedSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, number_of_images, lastHiddenLayerSize);
+        devideMatrixToScalar(lastGradient, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize);
 
-        relu_derivative(secondLayerResult, reluDerivativeSecondMatrix, number_of_images, secondHiddenLayerSize);
-        relu_derivative(firstLayerResult, reluDerivativeFirstMatrix, number_of_images, firstHiddenLayerSize);
+        relu_derivative(secondLayerResult, reluDerivativeSecondMatrix, numTrainSamples, secondHiddenLayerSize);
+        relu_derivative(firstLayerResult, reluDerivativeFirstMatrix, numTrainSamples, firstHiddenLayerSize);
 
         //gradientForBias(lastDelta, thirdBiasGradient, number_of_images, lastHiddenLayerSize);
 
         // Cho hidden layer 2
 
         //tinh delta
+        transposeMatrix(lastHiddenLayerWeight, transposedLastWeight, secondHiddenLayerSize, lastHiddenLayerSize);
         multiplyMatrix(lastDelta, transposedLastWeight, secondDelta, number_of_images, lastHiddenLayerSize, secondHiddenLayerSize);
         multiplyMatrixElementWise(secondDelta, reluDerivativeSecondMatrix, secondDelta, number_of_images, secondHiddenLayerSize);
 
         //tinh gradient 
         multiplyMatrix(transposedFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, number_of_images, secondHiddenLayerSize);
+        devideMatrixToScalar(secondGradient, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
         //gradientForBias(secondDelta, secondBiasGradient, number_of_images, secondHiddenLayerSize);
 
         // Cho hidden layer 1
 
         //tinh delta 
+        transposeMatrix(secondHiddenLayerWeight, transposedSecondWeight, firstHiddenLayerSize, secondHiddenLayerSize);
         multiplyMatrix(secondDelta, transposedSecondWeight, firstDelta, number_of_images, secondHiddenLayerSize, firstHiddenLayerSize);
         multiplyMatrixElementWise(firstDelta, reluDerivativeFirstMatrix, firstDelta, number_of_images, firstHiddenLayerSize);
 
         // tinh gradient 
         // tinh chuyen vi cua ma tran dau vao
-        multiplyMatrix(transposedInputMatrix, firstDelta, firstGradient, inputLayerSize, number_of_images, firstHiddenLayerSize);
+        multiplyMatrix(transposedInputMatrix, firstDelta, firstGradient, inputLayerSize, numTrainSamples, firstHiddenLayerSize);
+        devideMatrixToScalar(firstGradient, number_of_images, inputLayerSize, firstHiddenLayerSize);
         //gradientForBias(firstDelta, firstBiasGradient, number_of_images, firstHiddenLayerSize);
 
         // Cap nhat trong so
@@ -496,7 +650,7 @@ int main() {
         updateWeights(firstHiddenLayerWeight, firstGradient, LEARNING_RATE, inputLayerSize, firstHiddenLayerSize);
         //updateBias(firstBiases, firstBiasGradient, LEARNING_RATE, firstHiddenLayerSize);
 
-        double err = crossEntropy(lastLayerResult, input_labels, number_of_images, lastHiddenLayerSize);
+        double err = crossEntropy(lastLayerResult, train_one_hot_labels, numTrainSamples, lastHiddenLayerSize);
         errorList[i] = err;
 
         cout << "Cross Entropy: " << err <<", Epoch:" << i << endl;
@@ -546,4 +700,13 @@ int main() {
     free(thirdBiasGradient);
     free(errorList);
     free(labels);
+    free(train_data);
+    free(train_one_hot_labels);
+    free(train_labels);
+    free(val_data);
+    free(val_one_hot_labels);
+    free(val_labels);
+    free(test_data);
+    free(test_one_hot_labels);
+    free(test_labels);
 }
