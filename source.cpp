@@ -2,8 +2,8 @@
 #include<fstream>
 #include<string>
 #include<math.h>
-#define LEARNING_RATE 1.0
-#define NUM_EPOCH 3
+#define LEARNING_RATE 0.1
+#define NUM_EPOCH 10
 #define TRAIN_RATE 0.8
 #define VAL_RATE 0.1
 #define TEST_RATE 0.1
@@ -28,8 +28,6 @@ void read_mnist(string filename, double* &inputData, unsigned int& number_of_ima
     if (file.is_open())
     {
         unsigned int magic_number=0;
-        unsigned char minNum = 255;
-        unsigned char maxNum = 0;
         file.read((char*)&magic_number,sizeof(magic_number)); 
         magic_number= reverseInt(magic_number);
         file.read((char*)&number_of_images,sizeof(number_of_images));
@@ -53,7 +51,7 @@ void read_mnist(string filename, double* &inputData, unsigned int& number_of_ima
                     unsigned char temp=0;
                     file.read((char*)&temp,sizeof(temp));
                     // Doc tung pixel
-                    inputData[i*n_rows*n_cols + r * n_cols + c] = double(temp);
+                    inputData[i*n_rows*n_cols + r * n_cols + c] = double(temp) / 255;
                 }
 
             }
@@ -144,19 +142,18 @@ void softmax(double* input, int rows, int cols) {
 }
 
 void initialize_weights(double* weights, int n_in, int n_out)  {
-    double stddev = sqrt(2.0 / n_in); // Standard deviation based on He initialization formula
+    double stddev = sqrt(2.0 / n_in); 
     for (int i = 0; i < n_in * n_out; i++) {
-        // Generate random weight from a normal distribution (mean 0, variance stddev^2)
         double u1 = (double)rand() / RAND_MAX;
         double u2 = (double)rand() / RAND_MAX;
-        double z = sqrt(-2.0 * log(u1)) * cos(2 * M_PI * u2); // Box-Muller transform
+        double z = sqrt(-2.0 * log(u1)) * cos(2 * M_PI * u2); 
         weights[i] = z * stddev;
     }
 }
 
 void initialize_biases(double* bias, int rows) {
     for (int i = 0; i < rows; i++) {
-        bias[i] = ((rand() / (double)RAND_MAX) * 0.001) - 0.0005;
+        bias[i] = ((rand() / (double)RAND_MAX) * 0.01) - 0.005;
     }
 }
 
@@ -397,7 +394,6 @@ int main() {
     // Doc Du lieu
     unsigned int number_of_images, n_rows, n_cols;
     read_mnist(filename, input_data, number_of_images, n_rows, n_cols);
-    devideMatrixToScalar(input_data, 255, number_of_images, 784);
 
     unsigned int requiredMemsizeForLabel = number_of_images * 10;
     input_labels = (double*)malloc(requiredMemsizeForLabel * sizeof(double));
@@ -562,50 +558,42 @@ int main() {
     double* labels = (double*)malloc(number_of_images*sizeof(double));
     read_labels(nameOfLabelFile, labels);
 
+    shuffle_data(input_data, input_labels, labels, number_of_images, inputLayerSize, lastHiddenLayerSize);
+    split(input_data, input_labels, labels, number_of_images, inputLayerSize, lastHiddenLayerSize, train_data, train_one_hot_labels, train_labels, val_data, val_one_hot_labels, val_labels, test_data, test_one_hot_labels, test_labels);
+
+    cout << "Check label in train dataset\n\n";
     for (int label = 0; label < 10; label++) {
         unsigned int count = 0;
-        for (int image = 0; image < number_of_images; image++) {
-            if (labels[image] == label) {
+        for (int image = 0; image < TRAIN_RATE * number_of_images; image++) {
+            if (train_labels[image] == label) {
                 count++;
             }
         }
 
         cout << "Label: " << label <<", Count: " << count << endl;
     }
-
-    for (int i = 0; i < 5; i++) {
-        for (int j = 0; j < 5; j++) {
-            cout << firstHiddenLayerWeight[i*firstHiddenLayerSize + j] << ' ';
-        }
-        cout << endl;
-    }
-    cout << endl;
-
-    shuffle_data(input_data, input_labels, labels, number_of_images, inputLayerSize, lastHiddenLayerSize);
-    split(input_data, input_labels, labels, number_of_images, inputLayerSize, lastHiddenLayerSize, train_data, train_one_hot_labels, train_labels, val_data, val_one_hot_labels, val_labels, test_data, test_one_hot_labels, test_labels);
-
     int numTrainSamples = TRAIN_RATE * number_of_images;
     //===========================================================================================================================
 
     for (int i = 0; i < NUM_EPOCH; i++) {
         // Forward qua 3 lop
 
-        forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
-        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
+        forwardNN(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, numTrainSamples, inputLayerSize, firstHiddenLayerSize);
+        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, numTrainSamples, firstHiddenLayerSize, secondHiddenLayerSize);
+        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, numTrainSamples, secondHiddenLayerSize, lastHiddenLayerSize, false);
         // Goi ham softmax cho ket qua cua layer cuoi
-        softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
+        softmax(lastLayerResult, numTrainSamples, lastHiddenLayerSize);
         // backprop
 
         // Tinh transpose truoc
-        transposeMatrix(secondLayerResult, transposedSecondResult, number_of_images, secondHiddenLayerSize);
-        transposeMatrix(firstLayerResult, transposedFirstResult, number_of_images, firstHiddenLayerSize);
+        transposeMatrix(secondLayerResult, transposedSecondResult, numTrainSamples, secondHiddenLayerSize);
+        transposeMatrix(firstLayerResult, transposedFirstResult, numTrainSamples, firstHiddenLayerSize);
 
-        calculateLastDelta(lastLayerResult, input_labels, lastDelta, number_of_images, lastHiddenLayerSize);
+        calculateLastDelta(lastLayerResult, train_one_hot_labels, lastDelta, numTrainSamples, lastHiddenLayerSize);
 
         // Tinh cho gradient lop cuoi
-        multiplyMatrix(transposedSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, number_of_images, lastHiddenLayerSize);
-        devideMatrixToScalar(lastGradient, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize);
+        multiplyMatrix(transposedSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, numTrainSamples, lastHiddenLayerSize);
+        devideMatrixToScalar(lastGradient, numTrainSamples, secondHiddenLayerSize, lastHiddenLayerSize);
 
         relu_derivative(secondLayerResult, reluDerivativeSecondMatrix, numTrainSamples, secondHiddenLayerSize);
         relu_derivative(firstLayerResult, reluDerivativeFirstMatrix, numTrainSamples, firstHiddenLayerSize);
@@ -616,25 +604,25 @@ int main() {
 
         //tinh delta
         transposeMatrix(lastHiddenLayerWeight, transposedLastWeight, secondHiddenLayerSize, lastHiddenLayerSize);
-        multiplyMatrix(lastDelta, transposedLastWeight, secondDelta, number_of_images, lastHiddenLayerSize, secondHiddenLayerSize);
-        multiplyMatrixElementWise(secondDelta, reluDerivativeSecondMatrix, secondDelta, number_of_images, secondHiddenLayerSize);
+        multiplyMatrix(lastDelta, transposedLastWeight, secondDelta, numTrainSamples, lastHiddenLayerSize, secondHiddenLayerSize);
+        multiplyMatrixElementWise(secondDelta, reluDerivativeSecondMatrix, secondDelta, numTrainSamples, secondHiddenLayerSize);
 
         //tinh gradient 
-        multiplyMatrix(transposedFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, number_of_images, secondHiddenLayerSize);
-        devideMatrixToScalar(secondGradient, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+        multiplyMatrix(transposedFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, numTrainSamples, secondHiddenLayerSize);
+        devideMatrixToScalar(secondGradient, numTrainSamples, firstHiddenLayerSize, secondHiddenLayerSize);
         //gradientForBias(secondDelta, secondBiasGradient, number_of_images, secondHiddenLayerSize);
 
         // Cho hidden layer 1
 
         //tinh delta 
         transposeMatrix(secondHiddenLayerWeight, transposedSecondWeight, firstHiddenLayerSize, secondHiddenLayerSize);
-        multiplyMatrix(secondDelta, transposedSecondWeight, firstDelta, number_of_images, secondHiddenLayerSize, firstHiddenLayerSize);
-        multiplyMatrixElementWise(firstDelta, reluDerivativeFirstMatrix, firstDelta, number_of_images, firstHiddenLayerSize);
+        multiplyMatrix(secondDelta, transposedSecondWeight, firstDelta, numTrainSamples, secondHiddenLayerSize, firstHiddenLayerSize);
+        multiplyMatrixElementWise(firstDelta, reluDerivativeFirstMatrix, firstDelta, numTrainSamples, firstHiddenLayerSize);
 
         // tinh gradient 
         // tinh chuyen vi cua ma tran dau vao
         multiplyMatrix(transposedInputMatrix, firstDelta, firstGradient, inputLayerSize, numTrainSamples, firstHiddenLayerSize);
-        devideMatrixToScalar(firstGradient, number_of_images, inputLayerSize, firstHiddenLayerSize);
+        devideMatrixToScalar(firstGradient, numTrainSamples, inputLayerSize, firstHiddenLayerSize);
         //gradientForBias(firstDelta, firstBiasGradient, number_of_images, firstHiddenLayerSize);
 
         // Cap nhat trong so
@@ -649,11 +637,18 @@ int main() {
         //layer 1
         updateWeights(firstHiddenLayerWeight, firstGradient, LEARNING_RATE, inputLayerSize, firstHiddenLayerSize);
         //updateBias(firstBiases, firstBiasGradient, LEARNING_RATE, firstHiddenLayerSize);
+        cout << "Epoch: " << i ;
+        cout <<", Train Accuracy: " << accuracy(lastLayerResult, train_labels, TRAIN_RATE * number_of_images, lastHiddenLayerSize) << \
+            ", Train Loss: " << crossEntropy(lastLayerResult, train_one_hot_labels, TRAIN_RATE * number_of_images, lastHiddenLayerSize);
 
-        double err = crossEntropy(lastLayerResult, train_one_hot_labels, numTrainSamples, lastHiddenLayerSize);
-        errorList[i] = err;
+        forwardNN(val_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, VAL_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
+        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, VAL_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, VAL_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
-        cout << "Cross Entropy: " << err <<", Epoch:" << i << endl;
+        softmax(lastLayerResult, VAL_RATE * number_of_images, lastHiddenLayerSize);
+
+        cout <<", Val Accuracy: " << accuracy(lastLayerResult, val_labels, VAL_RATE * number_of_images, lastHiddenLayerSize) << \
+            ", Val Loss: " << crossEntropy(lastLayerResult, val_one_hot_labels, VAL_RATE * number_of_images, lastHiddenLayerSize) << endl;
     }
 
     //##############################################################################################################################################
@@ -663,13 +658,13 @@ int main() {
     }
     cout << endl;
     cout << endl;
-    forwardNN(input_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, number_of_images, inputLayerSize, firstHiddenLayerSize);
-    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
+    forwardNN(test_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TEST_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
+    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TEST_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TEST_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
     // Goi ham softmax cho ket qua cua layer cuoi
-    softmax(lastLayerResult, number_of_images, lastHiddenLayerSize);
-    cout << "Accuracy: " << accuracy(lastLayerResult, labels, number_of_images, lastHiddenLayerSize);
+    softmax(lastLayerResult, TEST_RATE * number_of_images, lastHiddenLayerSize);
+    cout << "Accuracy: " << accuracy(lastLayerResult, test_labels, TEST_RATE * number_of_images, lastHiddenLayerSize);
 
     free(transposedInputMatrix);
     free(input_data);
