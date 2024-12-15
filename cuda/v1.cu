@@ -198,8 +198,8 @@ int main(int argc, char* argv[]) {
     int num_epochs = 10;
     int num_categories = 10;
     float learning_rate = 0.001f;
-    string train_data_path = "./train-images-idx3-ubyte";
-    string train_label_path = "./train-labels-idx1-ubyte";
+    string train_data_path = "./data/train-images-idx3-ubyte";
+    string train_label_path = "./data/train-labels-idx1-ubyte";
 
     // Read images and labels from file into host memory
     uint8_t* h_train_images = readImagesIntoHostMemory(train_data_path, num_images, image_height, image_width);
