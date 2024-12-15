@@ -2,11 +2,23 @@
 #include<fstream>
 #include<string>
 #include<math.h>
-#define LEARNING_RATE 0.05
+#define LEARNING_RATE 0.04
 #define NUM_EPOCH 20
 #define TRAIN_RATE 0.8
 #define VAL_RATE 0.1
 #define TEST_RATE 0.1
+
+#define CHECK(call)\
+{\
+	const cudaError_t error = call;\
+	if (error != cudaSuccess)\
+	{\
+		fprintf(stderr, "Error: %s:%d, ", __FILE__, __LINE__);\
+		fprintf(stderr, "code: %d, reason: %s\n", error,\
+				cudaGetErrorString(error));\
+		exit(EXIT_FAILURE);\
+	}\
+}
 
 using namespace std;
 
@@ -140,21 +152,59 @@ void read_labels(string filename, double* input_labels) {
     file.close();
 }
 
-void forwardNN(double* input, double* weight, double* bias, double* output, int inputRows, int inputCols, int outputCols, bool usedActivate = true) {
-    for (int i = 0; i < inputRows; i++) {
-        for (int j = 0; j < outputCols; j++) {
-            double temp = 0;
-            for (int k = 0; k < inputCols; k++) {
-                temp += input[i * inputCols + k] * weight[k * outputCols + j];
-            }
-            temp += bias[j];
-            if (usedActivate) {
-                output[i * outputCols + j] = relu(temp);
+double relu(double x) {
+    double result = (x > 0) ? x : 0;
+    return result;
+}
+
+__global__ void forwardNN_GPU_Kernel(double* input, double* weight, double* bias, double* output, int inputRows, int inputCols, int outputCols, bool usedActivate) {
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (row < inputRows && col < outputCols) {
+        double result = 0;
+
+        for (int i = 0; i < inputCols; i++) {
+            result += input[row * inputCols + i] * weight[i * outputCols + col];
+        }
+
+        result += bias[col];
+
+        if (usedActivate) {
+            if (result < 0) {
+                output[row * outputCols + col] = 0;
             } else {
-                output[i * outputCols + j] = temp;
+                output[row * outputCols + col] = result;
             }
+        } else {
+            output[row * outputCols + col] = result;
         }
     }
+}
+
+void forwardNN_GPU(double* input, double* weight, double* bias, double* output, int inputRows, int inputCols, int outputCols, bool usedActivate = true) {
+    double *d_input, *d_weight, *d_bias, *d_output;
+
+    CHECK(cudaMalloc(&d_input, inputRows * inputCols * sizeof(double)));
+    CHECK(cudaMalloc(&d_weight, inputCols * outputCols * sizeof(double)));
+    CHECK(cudaMalloc(&d_bias, outputCols * sizeof(double)));
+    CHECK(cudaMalloc(&d_output, inputRows * outputCols * sizeof(double)));
+
+    CHECK(cudaMemcpy(d_input, input, inputRows * inputCols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_weight, weight, inputCols * outputCols * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_bias, bias, outputCols * sizeof(double), cudaMemcpyHostToDevice));
+    
+    dim3 blockSize(32, 32);
+    dim3 gridSize((outputCols - 1) / blockSize.x + 1, (inputRows - 1) / blockSize.y + 1);
+
+    forwardNN_GPU_Kernel<<<gridSize, blockSize>>>(d_input, d_weight, d_bias, d_output, inputRows, inputCols, outputCols, usedActivate);
+
+    CHECK(cudaMemcpy(output, d_output, inputRows * outputCols * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK(cudaFree(d_input));
+    CHECK(cudaFree(d_weight));
+    CHECK(cudaFree(d_bias));
+    CHECK(cudaFree(d_output));
 }
 
 void softmax(double* input, int rows, int cols) {
@@ -394,18 +444,40 @@ void split(double* data, double* one_hot_labels, double* labels, int rows, int c
     }
 }
 
-void backwardNN(double* transposedMatrix, double* delta, double* gradient, int inHiddenLayerSize, int numSample, int outHiddenLayerSize) {
-    for (int row = 0; row < inHiddenLayerSize; row++) {
-        for (int col = 0; col < outHiddenLayerSize; col++) {
-            double temp = 0;
+__global__ void backwardNN_Kernel(double* transposedMatrix, double* delta, double* gradient, int inHiddenLayerSize, int numSample, int outHiddenLayerSize) {
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
 
-            for (int index  = 0; index < numSample; index++) {
-                temp += transposedMatrix[row * numSample + index] * delta[index * outHiddenLayerSize + col];
-            }
+    if (row < inHiddenLayerSize && col < outHiddenLayerSize) {
+        double result = 0;
 
-            gradient[row * outHiddenLayerSize + col] = temp / numSample;
-        }
+        for (int i = 0; i < numSample; i++) {
+            result += transposedMatrix[row * numSample + i] * delta[i * outHiddenLayerSize + col];
+        } 
+
+        gradient[row * outHiddenLayerSize + col] = result / numSample;
     }
+}
+
+void backwardNN_GPU(double* transposedMatrix, double* delta, double* gradient, int inHiddenLayerSize, int numSample, int outHiddenLayerSize) {
+    double* d_matrix, *d_delta, *d_gradient;
+
+    CHECK(cudaMalloc(&d_matrix, inHiddenLayerSize * numSample * sizeof(double)));
+    CHECK(cudaMalloc(&d_delta, numSample * outHiddenLayerSize * sizeof(double)));
+    CHECK(cudaMalloc(&d_gradient, inHiddenLayerSize * outHiddenLayerSize * sizeof(double)));
+
+    CHECK(cudaMemcpy(d_matrix,transposedMatrix, inHiddenLayerSize * numSample * sizeof(double), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(d_delta, delta, numSample * outHiddenLayerSize * sizeof(double), cudaMemcpyHostToDevice));
+
+    dim3 blockSize(32, 32);
+    dim3 gridSize((outHiddenLayerSize - 1) / blockSize.x + 1, (inHiddenLayerSize - 1) / blockSize.y + 1);
+    backwardNN_Kernel<<<gridSize, blockSize>>>(d_matrix, d_delta, d_gradient, inHiddenLayerSize, numSample, outHiddenLayerSize);
+
+    CHECK(cudaMemcpy(gradient, d_gradient, inHiddenLayerSize * outHiddenLayerSize * sizeof(double), cudaMemcpyDeviceToHost));
+
+    CHECK(cudaFree(d_matrix));
+    CHECK(cudaFree(d_delta));
+    CHECK(cudaFree(d_gradient));
 }
 
 void trainNN(double* train_data, double* train_one_hot_labels, double* train_labels, double* val_data, double* val_labels, double* val_one_hot_labels, double* firstHiddenLayerWeight, double *secondHiddenLayerWeight, double *lastHiddenLayerWeight, double* firstBiases, double *secondBiases, double *lastBiases, int num_epoch, int rows, int inputCols, int firstHiddenLayerSize, int secondHiddenLayerSize, int lastHiddenLayerSize) {
@@ -450,12 +522,12 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
         GpuTimer timer;
         timer.Start();
 
-        forwardNN(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, rows, inputCols, firstHiddenLayerSize);
+        forwardNN_GPU(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, rows, inputCols, firstHiddenLayerSize);
         timer.Stop();
         float time = timer.Elapsed();
         printf("Thoi gian forward qua lop dau: %f \n", time);
-        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, rows, firstHiddenLayerSize, secondHiddenLayerSize);
-        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, rows, secondHiddenLayerSize, lastHiddenLayerSize, false);
+        forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, rows, firstHiddenLayerSize, secondHiddenLayerSize);
+        forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, rows, secondHiddenLayerSize, lastHiddenLayerSize, false);
         // Goi ham softmax cho ket qua cua layer cuoi
         timer.Start();
         softmax(lastLayerResult, rows, lastHiddenLayerSize);
@@ -487,7 +559,7 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
         timer.Start();
         // multiplyMatrix(transposedSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, numTrainSamples, lastHiddenLayerSize);
         // devideMatrixToScalar(lastGradient, numTrainSamples, secondHiddenLayerSize, lastHiddenLayerSize);
-        backwardNN(transposeSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, rows, lastHiddenLayerSize);
+        backwardNN_GPU(transposeSecondResult, lastDelta, lastGradient, secondHiddenLayerSize, rows, lastHiddenLayerSize);
         gradientForBias(lastDelta, thirdBiasGradient, rows, lastHiddenLayerSize);
         timer.Stop();
         time = timer.Elapsed();
@@ -516,7 +588,7 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
         timer.Start();
         // multiplyMatrix(transposedFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, numTrainSamples, secondHiddenLayerSize);
         // devideMatrixToScalar(secondGradient, numTrainSamples, firstHiddenLayerSize, secondHiddenLayerSize);
-        backwardNN(transposeFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, rows, secondHiddenLayerSize);
+        backwardNN_GPU(transposeFirstResult, secondDelta, secondGradient, firstHiddenLayerSize, rows, secondHiddenLayerSize);
         gradientForBias(secondDelta, secondBiasGradient, rows, secondHiddenLayerSize);
         timer.Stop();
         time = timer.Elapsed();
@@ -539,7 +611,7 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
         timer.Start();
         // multiplyMatrix(transposedInputMatrix, firstDelta, firstGradient, inputLayerSize, numTrainSamples, firstHiddenLayerSize);
         // devideMatrixToScalar(firstGradient, numTrainSamples, inputLayerSize, firstHiddenLayerSize);
-        backwardNN(transposeInputMatrix, firstDelta, firstGradient, inputCols, rows, firstHiddenLayerSize);
+        backwardNN_GPU(transposeInputMatrix, firstDelta, firstGradient, inputCols, rows, firstHiddenLayerSize);
         gradientForBias(firstDelta, firstBiasGradient, rows, firstHiddenLayerSize);
         timer.Stop();
         time = timer.Elapsed();
@@ -563,9 +635,9 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
         time = timer.Elapsed();
         cout << "Thoi gian cap nhat: " << time << " ms" << endl;
 
-        forwardNN(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TRAIN_RATE * rows, inputCols, firstHiddenLayerSize);
-        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TRAIN_RATE * rows, firstHiddenLayerSize, secondHiddenLayerSize);
-        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TRAIN_RATE * rows, secondHiddenLayerSize, lastHiddenLayerSize, false);
+        forwardNN_GPU(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TRAIN_RATE * rows, inputCols, firstHiddenLayerSize);
+        forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TRAIN_RATE * rows, firstHiddenLayerSize, secondHiddenLayerSize);
+        forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TRAIN_RATE * rows, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
         softmax(lastLayerResult, TRAIN_RATE * rows, lastHiddenLayerSize);
 
@@ -573,9 +645,9 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
         cout <<", Train Accuracy: " << accuracy(lastLayerResult, train_labels, TRAIN_RATE * rows, lastHiddenLayerSize) << \
             ", Train Loss: " << crossEntropy(lastLayerResult, train_one_hot_labels, TRAIN_RATE * rows, lastHiddenLayerSize);
 
-        forwardNN(val_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, VAL_RATE * rows, inputCols, firstHiddenLayerSize);
-        forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, VAL_RATE * rows, firstHiddenLayerSize, secondHiddenLayerSize);
-        forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, VAL_RATE * rows, secondHiddenLayerSize, lastHiddenLayerSize, false);
+        forwardNN_GPU(val_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, VAL_RATE * rows, inputCols, firstHiddenLayerSize);
+        forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, VAL_RATE * rows, firstHiddenLayerSize, secondHiddenLayerSize);
+        forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, VAL_RATE * rows, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
         softmax(lastLayerResult, VAL_RATE * rows, lastHiddenLayerSize);
 
@@ -822,12 +894,12 @@ int main() {
     //     GpuTimer timer;
     //     timer.Start();
 
-    //     forwardNN(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, numTrainSamples, inputLayerSize, firstHiddenLayerSize);
+    //     forwardNN_GPU(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, numTrainSamples, inputLayerSize, firstHiddenLayerSize);
     //     timer.Stop();
     //     float time = timer.Elapsed();
     //     printf("Thoi gian forward qua lop dau: %f \n", time);
-    //     forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, numTrainSamples, firstHiddenLayerSize, secondHiddenLayerSize);
-    //     forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, numTrainSamples, secondHiddenLayerSize, lastHiddenLayerSize, false);
+    //     forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, numTrainSamples, firstHiddenLayerSize, secondHiddenLayerSize);
+    //     forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, numTrainSamples, secondHiddenLayerSize, lastHiddenLayerSize, false);
     //     // Goi ham softmax cho ket qua cua layer cuoi
     //     timer.Start();
     //     softmax(lastLayerResult, numTrainSamples, lastHiddenLayerSize);
@@ -933,9 +1005,9 @@ int main() {
     //     time = timer.Elapsed();
     //     cout << "Thoi gian cap nhat: " << time << " ms" << endl;
 
-    //     forwardNN(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TRAIN_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
-    //     forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TRAIN_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-    //     forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TRAIN_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
+    //     forwardNN_GPU(train_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TRAIN_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
+    //     forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TRAIN_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+    //     forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TRAIN_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
     //     softmax(lastLayerResult, TRAIN_RATE * number_of_images, lastHiddenLayerSize);
 
@@ -943,9 +1015,9 @@ int main() {
     //     cout <<", Train Accuracy: " << accuracy(lastLayerResult, train_labels, TRAIN_RATE * number_of_images, lastHiddenLayerSize) << \
     //         ", Train Loss: " << crossEntropy(lastLayerResult, train_one_hot_labels, TRAIN_RATE * number_of_images, lastHiddenLayerSize);
 
-    //     forwardNN(val_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, VAL_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
-    //     forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, VAL_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-    //     forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, VAL_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
+    //     forwardNN_GPU(val_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, VAL_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
+    //     forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, VAL_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+    //     forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, VAL_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
     //     softmax(lastLayerResult, VAL_RATE * number_of_images, lastHiddenLayerSize);
 
@@ -955,9 +1027,9 @@ int main() {
     trainNN(train_data, train_one_hot_labels, train_labels, val_data, val_labels, val_one_hot_labels, firstHiddenLayerWeight, secondHiddenLayerWeight, lastHiddenLayerWeight, firstBiases, secondBiases, lastBiases, NUM_EPOCH, number_of_images, inputLayerSize, firstHiddenLayerSize, secondHiddenLayerSize, lastHiddenLayerSize);
     //##############################################################################################################################################
     cout << endl;
-    forwardNN(test_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TEST_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
-    forwardNN(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TEST_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
-    forwardNN(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TEST_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
+    forwardNN_GPU(test_data, firstHiddenLayerWeight, firstBiases, firstLayerResult, TEST_RATE * number_of_images, inputLayerSize, firstHiddenLayerSize);
+    forwardNN_GPU(firstLayerResult, secondHiddenLayerWeight, secondBiases, secondLayerResult, TEST_RATE * number_of_images, firstHiddenLayerSize, secondHiddenLayerSize);
+    forwardNN_GPU(secondLayerResult, lastHiddenLayerWeight, lastBiases, lastLayerResult, TEST_RATE * number_of_images, secondHiddenLayerSize, lastHiddenLayerSize, false);
 
     // Goi ham softmax cho ket qua cua layer cuoi
     softmax(lastLayerResult, TEST_RATE * number_of_images, lastHiddenLayerSize);
