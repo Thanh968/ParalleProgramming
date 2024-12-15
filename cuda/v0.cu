@@ -16,7 +16,7 @@ __global__ void g_randomizeValues(float* a, int n, unsigned long long seed = 666
     }
 }
 
-__global__ void g_matMul(float* mat_a, float* mat_b, float* mat_out, int m, int n, int k) {
+__global__ void g_mulMats(float* mat_a, float* mat_b, float* mat_out, int m, int n, int k) {
     int r = blockIdx.y * blockDim.y + threadIdx.y;
     int c = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -66,10 +66,49 @@ __global__ void g_matExpSumRows(float* mat_in, float* mat_out, float* sums, int 
 
 __global__ void g_matSoftmax(float* mat_in, float* mat_out, float* sums, int m, int n) {
     int r = blockIdx.y * blockDim.y + threadIdx.y;
-    int c = blockIdx.x * blockDim.x * 2 + threadIdx.x;
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= m || c >= n) return;
     
     mat_out[r * n + c] = exp(mat_in[r * n + c]) / sums[r];
+}
+
+__global__ void g_computeReLUDerivative(float* mat_in, float* mat_out, int m, int n) {
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r < m && c < n) {
+        mat_out[r * n + c] = (mat_in[r * n + c] > 0) ? 1 : 0;
+    }
+}
+
+__global__ void g_subMats(float* mat_a, float* mat_b, float* mat_o, int m, int n) {
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r < m && c < n) {
+        mat_o[r * n + c] = mat_a[r * n + c] - mat_b[r * n + c];
+    }
+}
+
+__global__ void g_sumRowsMat(float* mat_in, float* vec_out, int m, int n) {
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    int c = blockIdx.x * blockDim.x * 2 + threadIdx.x;
+    if (r >= m || c >= n) return;
+
+    int org_val_1 = mat_in[r * n + c];
+    int org_val_2 = mat_in[r * n + c + blockDim.x];
+    for (int stride = blockDim.x; stride >= 1; stride /= 2) {
+        if (threadIdx.x < stride && c + stride < n) {
+            mat_in[r * n + c] += mat_in[r * n + c + stride];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) {
+        atomicAdd(&vec_out[r], mat_in[r * n + blockIdx.x * blockDim.x * 2]);
+    }
+    __syncthreads();
+    mat_in[r * n + c] = org_val_1;
+    if (c + blockDim.x < n) {
+        mat_in[r * n + c + blockDim.x] = org_val_2;
+    }
 }
 
 namespace Data {
@@ -139,7 +178,7 @@ namespace Data {
             int m = mat_a.getHeight(), n = mat_a.getWidth(), k = mat_out.getWidth();
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((k + block_size.x - 1) / block_size.x, (m + block_size.y - 1) / block_size.y);
-            g_matMul<<<grid_size, block_size>>>(mat_a.getData(), mat_b.getData(), mat_out.getData(), m, n, k);
+            g_mulMats<<<grid_size, block_size>>>(mat_a.getData(), mat_b.getData(), mat_out.getData(), m, n, k);
             CHECK_CUDA(cudaDeviceSynchronize());
         }
 
@@ -206,11 +245,25 @@ namespace Data {
     void softmax(const Matrix& mat_in, Matrix& mat_out, Vector& sums) {
         int m = mat_in.getHeight(), n = mat_out.getWidth();
         dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
-        dim3 grid_size((n + block_size.x - 1) / block_size.x, (m + block_size.y - 1) / block_size.y);
+        dim3 grid_size((n + block_size.x * 2 - 1) / (block_size.x * 2), (m + block_size.y - 1) / block_size.y);
         g_matExpSumRows<<<grid_size, block_size>>>(mat_in.getData(), mat_out.getData(), sums.getData(), m, n);
         CHECK_CUDA(cudaDeviceSynchronize());
+        grid_size = dim3((n + block_size.x - 1) / block_size.x, (m + block_size.y - 1) / block_size.y);
         g_matSoftmax<<<grid_size, block_size>>>(mat_in.getData(), mat_out.getData(), sums.getData(), m, n);
         CHECK_CUDA(cudaDeviceSynchronize());
+    }
+
+    void computeReLUDerivative(const Matrix& mat_in, Matrix& mat_out) {
+        dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+        dim3 grid_size((mat_in.getWidth() + block_size.x - 1) / block_size.x, (mat_in.getHeight() + block_size.y - 1) / block_size.y);
+        g_computeReLUDerivative<<<grid_size, block_size>>>(mat_in.getData(), mat_out.getData(), mat_in.getHeight(), mat_in.getWidth());
+    }
+
+    void computeGrad_z_x(const Matrix& w, Vector& g) {
+        int m = w.getHeight(), n = w.getWidth();
+        dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+        dim3 grid_size((n + block_size.x * 2 - 1) / (block_size.x * 2), (n + block_size.y * 2 - 1) / (block_size.y * 2));
+        g_sumRowsMat<<<grid_size, block_size>>>(w.getData(), g.getData(), m, n);
     }
 }
 
@@ -220,22 +273,34 @@ namespace Module {
     class AbstractModule {
     protected:
         int batch_size_;
+
+    public:
+        virtual ~AbstractModule() {
+            LOG("[-] Module destroyed");
+        }
+
     public:
         virtual void init(int batch_size = 1, bool randomize_weight = false) {
             batch_size_ = batch_size;
         }
         virtual Matrix* getOutput() const = 0;
+        virtual Matrix* getGradient() const = 0;
         virtual Matrix* forward(Matrix* x) = 0;
+        virtual Matrix* backward(Matrix* g) = 0;
     };
 
     class Linear : public AbstractModule {
     private:
         int input_size_;
         int output_size_;
+        Matrix* x_;
         Matrix* w_;
         Vector* b_;
         Matrix* m_;
         Matrix* z_;
+        Vector* grad_x_;
+        Vector* grad_w_;
+        Vector* grad_b_;
 
     public:
         Linear(int input_size, int output_size) :
@@ -244,8 +309,9 @@ namespace Module {
             w_(new Matrix(input_size, output_size)),
             b_(new Vector(output_size)),
             m_(nullptr),
-            z_(nullptr)
-            {}
+            z_(nullptr),
+            grad_w_(new Vector(output_size)),
+            grad_b_(new Vector(output_size)) {}
         
         ~Linear() {
             LOG("Destroy Linear layer");
@@ -274,7 +340,12 @@ namespace Module {
             return z_;
         }
 
+        Matrix* getGradient() const override {
+            return grad_x_;
+        }
+
         Matrix* forward(Matrix* x) override {
+            x_ = x;
             Matrix::mul(*x, *w_, *m_);
             #ifdef DEBUG
             printf("m = x * W\n");
@@ -286,6 +357,11 @@ namespace Module {
             z_->print();
             #endif
             return getOutput();
+        }
+
+        Matrix* backward(Matrix* g) override {
+            computeGrad_z_x(*w_, *grad_x_);
+            return getGradient();
         }
     };
 
@@ -303,7 +379,7 @@ namespace Module {
         ActivationLayer(int size) : size_(size), a_(nullptr) {}
 
         ~ActivationLayer() {
-            LOG("Destroy Activ Layer");
+            LOG("[-] Destroy Activ Layer");
             delete a_;
         }
 
@@ -324,13 +400,36 @@ namespace Module {
     };
 
     class ReLU : public ActivationLayer {
-    public:
-        ReLU(int size) : ActivationLayer(size) {}
+    private:
+        Matrix* grad_;
 
     public:
+        ReLU(int size) : ActivationLayer(size) {}
+        
+        ~ReLU() {
+            LOG("[-] ReLU layer destroyed");
+            delete grad_;
+        }
+
+    public:
+        void init(int batch_size = 1, bool randomize_weight = false) override {
+            ActivationLayer::init(batch_size, randomize_weight);
+            if (grad_ != nullptr) delete grad_;
+            grad_ = new Matrix(batch_size, size_);
+        }
+
+        Matrix* getGradient() const override {
+            return grad_;
+        }
+
         Matrix* forward(Matrix* x) override {
             reLU(*x, *a_);
             return getOutput();
+        }
+
+        Matrix* backward(Matrix* g) override {
+            computeReLUDerivative(*a_, *grad_);
+            return getGradient();
         }
     };
 
@@ -342,7 +441,7 @@ namespace Module {
         Softmax(int size) : ActivationLayer(size), s_(nullptr) {}
 
         ~Softmax() {
-            LOG("Destroy Softmax layer");
+            LOG("[-] Destroy Softmax layer");
             delete s_;
         }
 
@@ -356,6 +455,10 @@ namespace Module {
         Matrix* forward(Matrix* x) override {
             softmax(*x, *a_, *s_);
             return getOutput();
+        }
+
+        Matrix* backward(Matrix* g) override {
+            return nullptr;
         }
     };
 
@@ -371,30 +474,83 @@ namespace Module {
             {}
     };
 
-    class Dense : public AbstractModule {
-    private:
+
+
+    // template<typename ActivationType>
+    // class Dense : public AbstractDense {
+    // private:
+    //     int input_size_;
+    //     int output_size_;
+    //     Linear* lin_;
+    //     ActivationType* activ_;
+
+    // public:
+    //     Dense(int input_size, int output_size, ActivFuncEnum activ_func) :
+    //         input_size_(input_size),
+    //         output_size_(output_size),
+    //         lin_(new Linear(input_size, output_size)),
+    //         activ_(nullptr) {
+    //             if (activ_func == ActivFuncEnum::RELU) {
+    //                 LOG("activ_ set to ReLU");
+    //                 activ_ = new ReLU(output_size);
+    //             } else if (activ_func == ActivFuncEnum::SOFTMAX) {
+    //                 LOG("activ_ set to Softmax");
+    //                 activ_ = new Softmax(output_size);
+    //             }
+    //         }
+
+    //     ~Dense() {
+    //         LOG("Destroy dense layer...");
+    //         delete lin_;
+    //         delete activ_;
+    //     }
+
+    // public:
+    //     void init(int batch_size = 1, bool randomize_weight = false) override {
+    //         AbstractModule::init(batch_size, randomize_weight);
+    //         lin_->init(batch_size, randomize_weight);
+    //         activ_->init(batch_size, randomize_weight);
+    //     }
+
+    //     Matrix* getOutput() const override {
+    //         return activ_->getOutput();
+    //     }
+
+    //     Matrix* forward(Matrix* x) override {
+    //         lin_->forward(x);
+    //         activ_->forward(lin_->getOutput());
+    //         return getOutput();
+    //     }
+
+    //     Matrix* backward(Matrix* a) {
+    //         if constexpr (is_same_v<>)
+    //     }
+    // };
+
+    class AbstractDense : public AbstractModule {
+    protected:
         int input_size_;
         int output_size_;
-        Linear* lin_;
-        ActivationLayer* activ_;
 
     public:
-        Dense(int input_size, int output_size, ActivFuncEnum activ_func) :
-            input_size_(input_size),
-            output_size_(output_size),
-            lin_(new Linear(input_size, output_size)),
-            activ_(nullptr) {
-                if (activ_func == ActivFuncEnum::RELU) {
-                    LOG("activ_ set to ReLU");
-                    activ_ = new ReLU(output_size);
-                } else if (activ_func == ActivFuncEnum::SOFTMAX) {
-                    LOG("activ_ set to Softmax");
-                    activ_ = new Softmax(output_size);
-                }
-            }
+        AbstractDense(int input_size, int output_size) : input_size_(input_size), output_size_(output_size) {}
+        virtual ~AbstractDense() {}
+    };
 
-        ~Dense() {
-            LOG("Destroy dense layer...");
+    template<typename ActivType>
+    class Dense : public AbstractDense {
+    protected:
+        Linear* lin_;
+        ActivType* activ_;
+
+    public:
+        Dense(int input_size, int output_size) :
+            AbstractDense(input_size, output_size),
+            lin_(new Linear(input_size, output_size)),
+            activ_(new ActivType(output_size)) {}
+
+        virtual ~Dense() {
+            LOG("[-] Destroy dense layer...");
             delete lin_;
             delete activ_;
         }
@@ -410,19 +566,52 @@ namespace Module {
             return activ_->getOutput();
         }
 
+        Matrix* getGradient() const override {
+            return lin_->getGradient();
+        }
+
         Matrix* forward(Matrix* x) override {
             lin_->forward(x);
             activ_->forward(lin_->getOutput());
             return getOutput();
         }
+
+        virtual Matrix* backward(Matrix* g) override {
+            activ_->backward(g);
+            lin_->backward(activ_->getGradient());
+            return lin_->getGradient();
+        };
     };
 
-    class Ann : public AbstractModule {
-    private:
-        vector<Dense*> dense_layers_;
+    template<>
+    class Dense<ReLU> : public Dense<ActivationLayer> {
     public:
-        Ann(initializer_list<DenseLayerConfig> dense_layers_config) {
-            dense_layers_ = vector<Dense*>();
+        Dense(int input_size, int output_size) : Dense<ActivationLayer>(input_size, output_size) {}
+
+    public:
+        Matrix* backward(Matrix* g) override {
+            activ_->backward(g);
+        }
+    };
+
+    template<>
+    class Dense<Softmax> : public Dense<ActivationLayer> {
+    public:
+        Dense(int input_size, int output_size) : Dense<ActivationLayer>(input_size, output_size) {}
+
+    public:
+        Matrix* backward(Matrix* a) override {
+            
+        }
+    };
+
+    class ANN : public AbstractModule {
+    private:
+        vector<AbstractDense*> dense_layers_;
+
+    public:
+        ANN(initializer_list<DenseLayerConfig> dense_layers_config) {
+            dense_layers_ = vector<AbstractDense*>();
             int n_dense_layers = dense_layers_config.size();
             auto it = dense_layers_config.begin();
             for (int i = 0; i < n_dense_layers; ++i, ++it) {
@@ -430,11 +619,15 @@ namespace Module {
                 int input_size = config.input_size_;
                 int output_size = config.output_size_;
                 ActivFuncEnum activ_func = config.activ_func_;
-                dense_layers_.emplace_back(new Dense(input_size, output_size, activ_func));
+                if (activ_func == ActivFuncEnum::RELU) {
+                    dense_layers_.emplace_back(new Dense<ReLU>(input_size, output_size));
+                } else if (activ_func == ActivFuncEnum::SOFTMAX) {
+                    dense_layers_.emplace_back(new Dense<Softmax>(input_size, output_size));
+                }
             }
         }
 
-        ~Ann() {
+        ~ANN() {
             for (auto& dense_layer : dense_layers_) {
                 delete dense_layer;
             }
@@ -476,7 +669,7 @@ int main() {
     input->setData({ 1, 2, 3, 4, 5, 6, 7, 8 });
     input->print();
 
-    Ann model({
+    ANN model({
         { 4, 3, ActivFuncEnum::RELU },
         { 3, 2, ActivFuncEnum::SOFTMAX }
     });

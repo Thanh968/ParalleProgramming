@@ -1,5 +1,7 @@
 #pragma once
 
+#include <iostream>
+
 #ifdef DEBUG
 #define CHECK_CUDA(call)\
 {\
