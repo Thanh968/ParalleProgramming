@@ -8,11 +8,98 @@
 
 using namespace std;
 
+bool infer_mode = false;
+string train_images_path;
+string train_labels_path;
+string val_images_path;
+string val_labels_path;
+string save_weights_path;
+string load_weights_path;
+int num_train_images;
+int num_val_images;
+
+int num_epochs = 10;
+constexpr float learning_rate = 0.001f;
+
+constexpr int image_height = 28;
+constexpr int image_width = 28;
+constexpr int num_categories = 10;
+constexpr int num_pixels_per_image = image_height * image_width;
+constexpr int n_0 = num_pixels_per_image;
+constexpr int n_1 = 128;
+constexpr int n_2 = 128;
+constexpr int n_3 = num_categories;
+constexpr int num_weights = n_0 * n_1 + n_1 + n_1 * n_2 + n_2 + n_2 * n_3 + n_3;
+constexpr int offset_w_1 = 0;
+constexpr int offset_b_1 = offset_w_1 + n_0 * n_1;
+constexpr int offset_w_2 = offset_b_1 + n_1;
+constexpr int offset_b_2 = offset_w_2 + n_1 * n_2;
+constexpr int offset_w_3 = offset_b_2 + n_2;
+constexpr int offset_b_3 = offset_w_3 + n_2 * n_3;
+
+float* d_w_1;
+float* d_b_1;
+float* d_z_1;
+float* d_a_1;
+float* d_w_2;
+float* d_b_2;
+float* d_z_2;
+float* d_a_2;
+float* d_w_3;
+float* d_b_3;
+float* d_z_3;
+float* d_grad_w_1;
+float* d_grad_b_1;
+float* d_grad_z_1;
+float* d_grad_a_1_z_1;
+float* d_grad_a_1;
+float* d_grad_w_2;
+float* d_grad_b_2;
+float* d_grad_z_2;
+float* d_grad_a_2_z_2;
+float* d_grad_a_2;
+float* d_grad_w_3;
+float* d_grad_b_3;
+float* d_grad_z_3;
+
+void parseArguments(int argc, char* argv[]) {
+    int i = 1;
+    while (i < argc) {
+        if (strcmp(argv[i], "--infer") == 0 || strcmp(argv[i], "-i") == 0) {
+            infer_mode = true;
+            i += 1;
+        } else if (strcmp(argv[i], "--train-images") == 0) {
+            train_images_path = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "--train-labels") == 0) {
+            train_labels_path = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "--val-images") == 0) {
+            val_images_path = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "--val-labels") == 0) {
+            val_labels_path = argv[i + 1];
+            i += 2;
+        }else if (strcmp(argv[i], "--save-checkpoint") == 0) {
+            save_weights_path = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "--load-checkpoint") == 0) {
+            load_weights_path = argv[i + 1];
+            i += 2;
+        } else if (strcmp(argv[i], "--num-epochs") == 0) {
+            num_epochs = atoi(argv[i + 1]);
+            i += 2;
+        } else {
+            throw runtime_error("invalid arguments");
+        }
+    }
+}
+
 int32_t reverseInt32(uint8_t bytes[]) {
     return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
 }
 
-uint8_t* readImagesIntoHostMemory(string& file_path, int& num_images, int& image_height, int& image_width) {
+uint8_t* readImagesIntoHostMemory(string& file_path, int& num_images) {
     ifstream file(file_path, ios::binary);
     if (!file.is_open()) {
         throw runtime_error("cannot open file " + file_path);
@@ -22,10 +109,13 @@ uint8_t* readImagesIntoHostMemory(string& file_path, int& num_images, int& image
     file.read(reinterpret_cast<char*>(buffer), 16);
     int32_t magic_number = reverseInt32(buffer);
     num_images = reverseInt32(buffer + 4);
-    image_height = reverseInt32(buffer + 8);
-    image_width = reverseInt32(buffer + 12);
+    int32_t read_image_height = reverseInt32(buffer + 8);
+    int32_t read_image_width = reverseInt32(buffer + 12);
     if (magic_number != 0x803) {
         throw runtime_error("file contains invalid format - magic number " + magic_number);
+    }
+    if (read_image_height != image_height || read_image_width != image_width) {
+        throw runtime_error("unexpected image size");
     }
     LOG("Found " << num_images << " images, size " << image_height << " x " << image_width << ".");
 
@@ -40,7 +130,7 @@ uint8_t* readImagesIntoHostMemory(string& file_path, int& num_images, int& image
     return images;
 }
 
-uint8_t* readLabelsIntoHostMemory(string& file_path, int num_categories) {
+uint8_t* readLabelsIntoHostMemory(string& file_path) {
     ifstream file(file_path, ios::binary);
     if (!file.is_open()) {
         throw runtime_error("cannot open file " + file_path);
@@ -66,6 +156,85 @@ uint8_t* readLabelsIntoHostMemory(string& file_path, int num_categories) {
     file.close();
     delete[] labels;
     return onehot_labels;
+}
+
+void initData(string images_path, string labels_path, float*& d_images, float*& d_labels, int& num_images) {
+    uint8_t* h_images = readImagesIntoHostMemory(images_path, num_images);
+    uint8_t* h_labels = readLabelsIntoHostMemory(train_labels_path);
+
+    float* h_images_pinned;
+    float* h_labels_pinned;
+    CHECK_CUDA(cudaMallocHost((void**)&h_images_pinned, num_images * num_pixels_per_image * sizeof(float)));
+    CHECK_CUDA(cudaMallocHost((void**)&h_labels_pinned, num_images * num_pixels_per_image * sizeof(float)));
+    for (int i = 0; i < num_images * num_pixels_per_image; ++i) {
+        h_images_pinned[i] = static_cast<float>(h_images[i]);
+    }
+    for (int i = 0; i < num_images * num_categories; ++i) {
+        h_labels_pinned[i] = static_cast<float>(h_labels[i]);
+    }
+
+    CHECK_CUDA(cudaMalloc((void**)&d_images, num_images * num_pixels_per_image * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_labels, num_images * num_categories * sizeof(float)));
+    CHECK_CUDA(cudaMemcpy(d_images, h_images_pinned, num_images * num_pixels_per_image * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_labels, h_labels_pinned, num_images * num_categories * sizeof(float), cudaMemcpyHostToDevice));
+    LOG("Training data transfered to device memory.");
+
+    CHECK_CUDA(cudaFreeHost(h_images_pinned));
+    CHECK_CUDA(cudaFreeHost(h_labels_pinned));
+
+    delete[] h_images;
+    delete[] h_labels;
+}
+
+void saveWeights(string file_path) {
+    ofstream file(file_path, ios::binary);
+    if (!file.is_open()) {
+        throw runtime_error("cannot open file " + file_path);
+    }
+
+    float* h_weights;
+    CHECK_CUDA(cudaMallocHost((void**)&h_weights, num_weights * sizeof(float)));
+
+    CHECK_CUDA(cudaMemcpy((void*)(h_weights + offset_w_1), d_w_1, n_0 * n_1 * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy((void*)(h_weights + offset_b_1), d_b_1, n_1 * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy((void*)(h_weights + offset_w_2), d_w_2, n_1 * n_2 * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy((void*)(h_weights + offset_b_2), d_b_2, n_2 * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy((void*)(h_weights + offset_w_3), d_w_3, n_2 * n_3 * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy((void*)(h_weights + offset_b_3), d_b_3, n_3 * sizeof(float), cudaMemcpyDeviceToHost));
+
+    file.write(reinterpret_cast<char*>(h_weights), num_weights * sizeof(float));
+    LOG("Weights saved to file.");
+
+    CHECK_CUDA(cudaFreeHost(h_weights));
+    file.close();
+}
+
+void loadWeights(string file_path) {
+    ifstream file(file_path, ios::binary);
+    if (!file.is_open()) {
+        throw runtime_error("cannot open file " + file_path);
+    }
+
+    float* h_weights;
+    CHECK_CUDA(cudaMallocHost((void**)&h_weights, num_weights * sizeof(float)));
+
+    if (!file.read(reinterpret_cast<char*>(h_weights), num_weights * sizeof(float))) {
+        CHECK_CUDA(cudaFree(h_weights));
+        file.close();
+        throw runtime_error("cannot read file " + file_path);
+    }
+    LOG("Weights loaded from file into host memory.");
+
+    CHECK_CUDA(cudaMemcpy(d_w_1, (void*)(h_weights + offset_w_1), n_0 * n_1 * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b_1, (void*)(h_weights + offset_b_1), n_1 * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_w_2, (void*)(h_weights + offset_w_2), n_1 * n_2 * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b_2, (void*)(h_weights + offset_b_2), n_2 * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_w_3, (void*)(h_weights + offset_w_3), n_2 * n_3 * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_b_3, (void*)(h_weights + offset_b_3), n_3 * sizeof(float), cudaMemcpyHostToDevice));
+    LOG("Weights transfered from host to device memory.");
+
+    CHECK_CUDA(cudaFreeHost(h_weights));
+    file.close();
 }
 
 __global__ void g_transferAndConvertHTD(uint8_t* h_data, float* d_data, int n) {
@@ -193,72 +362,28 @@ __global__ void g_addLinear(float* dst, float* amount, float alpha, int n) {
     }
 }
 
-int main(int argc, char* argv[]) {
-    int num_images, image_height, image_width;
-    int num_epochs = 10;
-    int num_categories = 10;
-    float learning_rate = 0.001f;
-    string train_data_path = "./data/train-images-idx3-ubyte";
-    string train_label_path = "./data/train-labels-idx1-ubyte";
-
-    // Read images and labels from file into host memory
-    uint8_t* h_train_images = readImagesIntoHostMemory(train_data_path, num_images, image_height, image_width);
-    uint8_t* h_train_labels = readLabelsIntoHostMemory(train_label_path, num_categories);
-    LOG("Loaded training images and labels into host memory.");
-
-    // Transfer data from host to device and convert them from integers to floats
-    int num_pixels_per_image = image_height * image_width;
-    float* h_train_images_pinned;
-    float* h_train_labels_pinned;
-
-    CHECK_CUDA(cudaMallocHost((void**)&h_train_images_pinned, num_images * num_pixels_per_image * sizeof(float)));
-    CHECK_CUDA(cudaMallocHost((void**)&h_train_labels_pinned, num_images * num_pixels_per_image * sizeof(float)));
-
-    for (int i = 0; i < num_images * num_pixels_per_image; ++i) {
-        h_train_images_pinned[i] = static_cast<float>(h_train_images[i]);
-    }
-    for (int i = 0; i < num_images * num_categories; ++i) {
-        h_train_labels_pinned[i] = static_cast<float>(h_train_labels[i]);
-    }
-
+void train() {
     float* d_train_images;
     float* d_train_labels;
-    CHECK_CUDA(cudaMalloc((void**)&d_train_images, num_images * num_pixels_per_image * sizeof(float)));
-    CHECK_CUDA(cudaMalloc((void**)&d_train_labels, num_images * num_categories * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_train_images, h_train_images_pinned, num_images * num_pixels_per_image * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(d_train_labels, h_train_labels_pinned, num_images * num_categories * sizeof(float), cudaMemcpyHostToDevice));
-    LOG("Training data transfered to device memory.");
+    float* d_val_images;
+    float* d_val_labels;
 
-    int n = num_images, n_0 = num_pixels_per_image, n_1 = 128, n_2 = 128, n_3 = num_categories;
-    float* d_w_1;
-    float* d_b_1;
-    float* d_z_1;
-    float* d_a_1;
-    float* d_w_2;
-    float* d_b_2;
-    float* d_z_2;
-    float* d_a_2;
-    float* d_w_3;
-    float* d_b_3;
-    float* d_z_3;
-    // float* d_a_3;
-
-    float* d_grad_w_1;
-    float* d_grad_b_1;
-    float* d_grad_z_1;
-    float* d_grad_a_1_z_1;
-    float* d_grad_a_1;
-
-    float* d_grad_w_2;
-    float* d_grad_b_2;
-    float* d_grad_z_2;
-    float* d_grad_a_2_z_2;
-    float* d_grad_a_2;
+    initData(train_images_path, train_labels_path, d_train_images, d_train_labels, num_train_images);
+    initData(val_images_path, val_labels_path, d_val_images, d_val_labels, num_val_images);
+    LOG("Data initialized.");
     
-    float* d_grad_w_3; // n_2 x n_3
-    float* d_grad_b_3; // 1 x n_3
-    float* d_grad_z_3;
-
+    int n = num_train_images;
+    CHECK_CUDA(cudaMalloc((void**)&d_w_1, n_0 * n_1 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_b_1, n_1 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_z_1, n * n_1 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_a_1, n * n_1 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_w_2, n_1 * n_2 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_b_2, n_2 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_z_2, n * n_2 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_a_2, n * n_2 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_w_3, n_2 * n_3 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_b_3, n_3 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_z_3, n * n_3 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_w_1, n_0 * n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_b_1, n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_z_1, n * n_1 * sizeof(float)));
@@ -272,27 +397,20 @@ int main(int argc, char* argv[]) {
     CHECK_CUDA(cudaMalloc((void**)&d_z_3, n * n_3 * sizeof(float)));
     // CHECK_CUDA(cudaMalloc((void**)&d_a_3, n * n_3 * sizeof(float)));
 
-    CHECK_CUDA(cudaDeviceSynchronize());
-    LOG("Weights allocated.");
     CHECK_CUDA(cudaMalloc((void**)&d_grad_w_1, n_0 * n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_b_1, n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_z_1, n * n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_a_1_z_1, n * n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_a_1, n * n_1 * sizeof(float)));
-
     CHECK_CUDA(cudaMalloc((void**)&d_grad_w_2, n_1 * n_2 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_b_2, n_2 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_z_2, n * n_2 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_a_2_z_2, n * n_2 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_a_2, n * n_2 * sizeof(float)));
-    
     CHECK_CUDA(cudaMalloc((void**)&d_grad_w_3, n_2 * n_3 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_b_3, n_3 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_z_3, n * n_3 * sizeof(float)));
 
-
-
-    // Randomize weights
     unsigned long long random_seed = 666;
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
@@ -325,7 +443,7 @@ int main(int argc, char* argv[]) {
         g_randomizeValues<<<grid_size, block_size>>>(d_b_3, n_3, random_seed);
     }
     CHECK_CUDA(cudaDeviceSynchronize());
-    LOG("Weights randomized.");
+    LOG("Weights initialized.");
 
     for (int epoch = 0; epoch < num_epochs; ++epoch) {
         // Forward
@@ -336,7 +454,8 @@ int main(int argc, char* argv[]) {
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_1, d_b_1, n, n_1);
             g_activReLU<<<grid_size, block_size>>>(d_z_1, d_a_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Forwarded layer 1.");
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
@@ -345,7 +464,8 @@ int main(int argc, char* argv[]) {
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2, d_b_2, n, n_2);
             g_activReLU<<<grid_size, block_size>>>(d_z_2, d_a_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Forwarded layer 2.");
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
@@ -353,8 +473,9 @@ int main(int argc, char* argv[]) {
             g_mulMats<<<grid_size, block_size>>>(d_a_2, d_w_3, d_z_3, n, n_2, n_3);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_3, d_b_3, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        LOG("Forwarded layer 2.");
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
+        LOG("Forwarded layer 3.");
         // Backward
         // L / z3
         {
@@ -362,7 +483,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_subRowsMats<<<grid_size, block_size>>>(d_z_3, d_train_labels, d_grad_z_3, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/z3");
         // L / w3
         {
@@ -370,7 +492,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/w3");
         // L / b3
         {
@@ -378,7 +501,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_3 + block_size.x * 2 - 1) / (block_size.x * 2), (n + block_size.y - 1) / block_size.y);
             g_sumColsMat<<<grid_size, block_size>>>(d_z_3, d_grad_b_3, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/b3");
         // L / a2
         {
@@ -386,7 +510,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
             g_mulMatsSecondTransposed<<<grid_size, block_size>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/a2");
         // a2 / z2
         {
@@ -394,7 +519,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_computeDerivReLU<<<grid_size, block_size>>>(d_a_2, d_grad_a_2_z_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("a2/z2");
         // L / z2
         {
@@ -402,7 +528,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_mulMatsElemWise<<<grid_size, block_size>>>(d_grad_a_2, d_grad_a_2_z_2, d_grad_z_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/z2");
         // L / w2
         {
@@ -410,7 +537,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_1 + block_size.y - 1) / block_size.y);
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_1, d_grad_z_2, d_grad_w_2, n_1, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/w2");
         // L / b2
         {
@@ -418,7 +546,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x * 2 - 1) / (block_size.x * 2), (n + block_size.y - 1) / block_size.y);
             g_sumColsMat<<<grid_size, block_size>>>(d_z_2, d_grad_b_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/b2");
         // L / a1
         {
@@ -426,7 +555,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
             g_mulMatsSecondTransposed<<<grid_size, block_size>>>(d_grad_z_2, d_w_2, d_grad_a_1, n, n_2, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/a1");
         // L / z1
         {
@@ -434,7 +564,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_mulMatsElemWise<<<grid_size, block_size>>>(d_grad_a_1, d_grad_a_1_z_1, d_grad_z_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/z1");
         // L / w1
         {
@@ -442,7 +573,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n_0 + block_size.y - 1) / block_size.y);
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_train_images, d_grad_z_1, d_grad_w_1, n_0, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/w1");
         // L / b1
         {
@@ -450,7 +582,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_1 + block_size.x * 2 - 1) / (block_size.x * 2), (n + block_size.y - 1) / block_size.y);
             g_sumColsMat<<<grid_size, block_size>>>(d_z_1, d_grad_b_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("L/b1");
 
         // Update weight
@@ -460,7 +593,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n_0 + block_size.y - 1) / block_size.y);
             g_addLinear<<<grid_size, block_size>>>(d_w_1, d_grad_w_1, -learning_rate, n * n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Update w1");
         // b1
         {
@@ -468,7 +602,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_b_1, d_grad_b_1, -learning_rate, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Update b1");
         // w2
         {
@@ -476,7 +611,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_1 + block_size.y - 1) / block_size.y);
             g_addLinear<<<grid_size, block_size>>>(d_w_2, d_grad_w_2, -learning_rate, n * n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Update w2");
         // b2
         {
@@ -484,7 +620,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_b_2, d_grad_b_2, -learning_rate, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Update b2");
         // w3
         {
@@ -492,7 +629,8 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_1 + block_size.y - 1) / block_size.y);
             g_addLinear<<<grid_size, block_size>>>(d_w_2, d_grad_w_2, -learning_rate, n * n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Update w3");
         // b3
         {
@@ -500,12 +638,15 @@ int main(int argc, char* argv[]) {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_b_3, d_grad_b_3, -learning_rate, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
         LOG("Update b3");
 
         CHECK_CUDA(cudaDeviceSynchronize());
         printf("Epoch %d completed.\n", epoch);
     }
+
+    saveWeights(save_weights_path);
 
     CHECK_CUDA(cudaFree(d_w_1));
     CHECK_CUDA(cudaFree(d_b_1));
@@ -533,14 +674,23 @@ int main(int argc, char* argv[]) {
     CHECK_CUDA(cudaFree(d_grad_b_3));
     CHECK_CUDA(cudaFree(d_grad_z_3));
 
-    CHECK_CUDA(cudaFreeHost(h_train_images_pinned));
-    CHECK_CUDA(cudaFreeHost(h_train_labels_pinned));
-
     CHECK_CUDA(cudaFree(d_train_images));
     CHECK_CUDA(cudaFree(d_train_labels));
+}
 
-    delete[] h_train_images;
-    delete[] h_train_labels;
+void infer() {
 
+}
+
+int main(int argc, char* argv[]) {
+    parseArguments(argc, argv);
+    LOG("parsed arguments");
+
+    if (!infer_mode) {
+        train();
+    } else {
+        infer();
+    }
+    
     return 0;
 }

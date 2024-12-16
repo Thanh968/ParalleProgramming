@@ -14,12 +14,14 @@
         exit(EXIT_FAILURE);\
     }\
 }
+#define BREAK CHECK_CUDA(cudaDeviceSynchronize());
 #define LOG(...) \
 { \
     std::cout << __VA_ARGS__ << std::endl; \
 }
 #else
 #define CHECK_CUDA(call) call
+#define BREAK {}
 #define LOG(...) {}
 #endif
 
