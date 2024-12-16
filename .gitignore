@@ -6,3 +6,6 @@ test.cpp
 # Data
 **/ubyte
 *.weight
+
+# Test
+test/
