@@ -62,6 +62,18 @@ float* d_grad_w_3;
 float* d_grad_b_3;
 float* d_grad_z_3;
 
+float* d_z_1_infer;
+float* d_a_1_infer;
+float* d_z_2_infer;
+float* d_a_2_infer;
+float* d_z_3_infer;
+float* d_a_3_infer;
+
+float* h_loss_infer;
+float* d_loss_infer;
+int* h_count_correct_infer;
+int* d_count_correct_infer;
+
 void parseArguments(int argc, char* argv[]) {
     int i = 1;
     while (i < argc) {
@@ -160,7 +172,7 @@ uint8_t* readLabelsIntoHostMemory(string& file_path) {
 
 void initData(string images_path, string labels_path, float*& d_images, float*& d_labels, int& num_images) {
     uint8_t* h_images = readImagesIntoHostMemory(images_path, num_images);
-    uint8_t* h_labels = readLabelsIntoHostMemory(train_labels_path);
+    uint8_t* h_labels = readLabelsIntoHostMemory(labels_path);
 
     float* h_images_pinned;
     float* h_labels_pinned;
@@ -282,6 +294,27 @@ __global__ void g_activReLU(float* mat_in, float* mat_out, int m, int n) {
     }
 }
 
+__global__ void g_activSoftmax(float* mat_in, float* mat_out, int m, int n) {
+    int r = blockIdx.y * blockDim.y + threadIdx.y;
+    if (r >= m) return;
+
+    // float maxVal = -INFINITY;
+    float sumExp = 0.0;
+
+    // for (int c = 0; c < n; c++) {
+    //     maxVal = fmaxf(maxVal, mat_in[r * n + c]);
+    // }
+
+    for (int c = 0; c < n; c++) {
+        mat_out[r * n + c] = expf(mat_in[r * n + c]);
+        sumExp += mat_out[r * n + c];
+    }
+
+    for (int c = 0; c < n; c++) {
+        mat_out[r * n + c] /= sumExp;
+    }
+}
+
 __global__ void g_subRowsMats(float* mat_a, float* mat_b, float* mat_out, int m, int n) {
     int r = blockIdx.y * blockDim.y + threadIdx.y;
     int c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -362,6 +395,38 @@ __global__ void g_addLinear(float* dst, float* amount, float alpha, int n) {
     }
 }
 
+__global__ void g_computeCrossEntropy(float* y_pred, float* y_true, float* result, int rows, int cols) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < rows) {
+        float sumImage = 0.0;
+        for (int j = 0; j < cols; j++) {
+            int index = row * cols + j;
+            sumImage += y_true[index] * log(y_pred[index]);
+        }
+        result[row] = -sumImage;
+    }
+}
+
+__global__ void g_computeAccuracy(float* y_pred, float* y_true, int* correct, int rows, int cols) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < rows) {
+        int predicted_label = 0;
+        float max_val = y_pred[row * cols];
+        for (int j = 1; j < cols; j++) {
+            int index = row * cols + j;
+            if (y_pred[index] > max_val) {
+                max_val = y_pred[index];
+                predicted_label = j;
+            }
+        }
+        if (y_true[row * cols + predicted_label] == 1.0) {
+            atomicAdd(correct, 1);
+        }
+    }
+}
+
 void train() {
     float* d_train_images;
     float* d_train_labels;
@@ -372,7 +437,7 @@ void train() {
     initData(val_images_path, val_labels_path, d_val_images, d_val_labels, num_val_images);
     LOG("Data initialized.");
     
-    int n = num_train_images;
+    int n = num_train_images, n_infer = num_val_images;
     CHECK_CUDA(cudaMalloc((void**)&d_w_1, n_0 * n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_b_1, n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_z_1, n * n_1 * sizeof(float)));
@@ -396,6 +461,12 @@ void train() {
     CHECK_CUDA(cudaMalloc((void**)&d_b_3, n_3 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_z_3, n * n_3 * sizeof(float)));
     // CHECK_CUDA(cudaMalloc((void**)&d_a_3, n * n_3 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_z_1_infer, n_infer * n_1 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_a_1_infer, n_infer * n_1 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_z_2_infer, n_infer * n_2 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_a_2_infer, n_infer * n_2 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_z_3_infer, n_infer * n_3 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_a_3_infer, n_infer * n_3 * sizeof(float)));
 
     CHECK_CUDA(cudaMalloc((void**)&d_grad_w_1, n_0 * n_1 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_b_1, n_1 * sizeof(float)));
@@ -410,6 +481,11 @@ void train() {
     CHECK_CUDA(cudaMalloc((void**)&d_grad_w_3, n_2 * n_3 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_b_3, n_3 * sizeof(float)));
     CHECK_CUDA(cudaMalloc((void**)&d_grad_z_3, n * n_3 * sizeof(float)));
+
+    CHECK_CUDA(cudaMallocHost((void**)&h_loss_infer, n_infer * sizeof(float)));
+    CHECK_CUDA(cudaMalloc((void**)&d_loss_infer, n_infer * sizeof(float)));
+    CHECK_CUDA(cudaMallocHost((void**)&h_count_correct_infer, sizeof(int)));
+    CHECK_CUDA(cudaMalloc((void**)&d_count_correct_infer, sizeof(int)));
 
     unsigned long long random_seed = 666;
     {
@@ -642,6 +718,67 @@ void train() {
         BREAK;
         LOG("Update b3");
 
+        // Forward
+        {
+            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+            dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n_infer + block_size.y - 1) / block_size.y);
+            g_mulMats<<<grid_size, block_size>>>(d_val_images, d_w_1, d_z_1_infer, n_infer, n_0, n_1);
+            g_addRowsMatVec<<<grid_size, block_size>>>(d_z_1_infer, d_b_1, n_infer, n_1);
+            g_activReLU<<<grid_size, block_size>>>(d_z_1_infer, d_a_1_infer, n_infer, n_1);
+        }
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
+        LOG("Forwarded layer 1.");
+        {
+            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+            dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_infer + block_size.y - 1) / block_size.y);
+            g_mulMats<<<grid_size, block_size>>>(d_a_1_infer, d_w_2, d_z_2_infer, n_infer, n_1, n_2);
+            g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2_infer, d_b_2, n_infer, n_2);
+            g_activReLU<<<grid_size, block_size>>>(d_z_2_infer, d_a_2_infer, n_infer, n_2);
+        }
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
+        LOG("Forwarded layer 2.");
+        {
+            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+            dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_infer + block_size.y - 1) / block_size.y);
+            g_mulMats<<<grid_size, block_size>>>(d_a_2_infer, d_w_3, d_z_3_infer, n_infer, n_2, n_3);
+            g_addRowsMatVec<<<grid_size, block_size>>>(d_z_3_infer, d_b_3, n_infer, n_3);
+        }
+        {
+            dim3 block_size(1, DEFAULT_BLOCKSIZE);
+            dim3 grid_size(1, (n_infer + block_size.y - 1) / block_size.y);
+            g_activSoftmax<<<grid_size, block_size>>>(d_z_3_infer, d_a_3_infer, n_infer, n_3);
+        }
+        // CHECK_CUDA(cudaDeviceSynchronize());
+        BREAK;
+        LOG("Forwarded layer 3.");
+
+        // compute loss
+        {
+            float loss = 0.0f;
+            dim3 block_size(DEFAULT_BLOCKSIZE);
+            dim3 grid_size((n_infer + block_size.x - 1) / block_size.x);
+            g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3_infer, d_train_labels, d_loss_infer, n_infer, n_3);
+            CHECK_CUDA(cudaMemcpy(h_loss_infer, d_loss_infer, n_infer * sizeof(float), cudaMemcpyDeviceToHost));
+            for (int i = 0; i < n; ++i) {
+                loss += h_loss_infer[i];
+            }
+            LOG("Epoch " << epoch << " completed. Loss: " << loss);
+        }
+
+        //compute accuracy
+        {
+            float acc = 0.0f;
+            dim3 block_size(DEFAULT_BLOCKSIZE);
+            dim3 grid_size((n_infer + block_size.x - 1) / block_size.x);
+            g_computeAccuracy<<<grid_size, block_size>>>(d_z_3_infer, d_train_labels, d_count_correct_infer, n_infer, n_3);
+            CHECK_CUDA(cudaMemcpy(h_count_correct_infer, d_count_correct_infer, sizeof(int), cudaMemcpyDeviceToHost));
+            acc = static_cast<float>(*h_count_correct_infer) / n_infer;
+            LOG("Epoch " << epoch << " completed. Accuracy: " << acc);
+
+        }
+
         CHECK_CUDA(cudaDeviceSynchronize());
         printf("Epoch %d completed.\n", epoch);
     }
@@ -673,6 +810,11 @@ void train() {
     CHECK_CUDA(cudaFree(d_grad_w_3));
     CHECK_CUDA(cudaFree(d_grad_b_3));
     CHECK_CUDA(cudaFree(d_grad_z_3));
+
+    CHECK_CUDA(cudaFreeHost(h_loss_infer));
+    CHECK_CUDA(cudaFree(d_loss_infer));
+    CHECK_CUDA(cudaFreeHost(h_count_correct_infer));
+    CHECK_CUDA(cudaFree(d_count_correct_infer));
 
     CHECK_CUDA(cudaFree(d_train_images));
     CHECK_CUDA(cudaFree(d_train_labels));
