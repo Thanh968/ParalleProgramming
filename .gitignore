@@ -6,6 +6,8 @@ test.cpp
 # Data
 **/ubyte
 *.weight
+*.png
+*.nsys-rep
 
 # Test
 test/

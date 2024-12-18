@@ -2,7 +2,8 @@
 
 #include <iostream>
 
-#ifdef DEBUG
+#define DEFAULT_BLOCKSIZE 256
+#define DEFAULT_TILEWIDTH 32
 #define CHECK_CUDA(call)\
 {\
     const cudaError_t error = call;\
@@ -14,16 +15,14 @@
         exit(EXIT_FAILURE);\
     }\
 }
+
+#ifdef DEBUG
 #define BREAK CHECK_CUDA(cudaDeviceSynchronize());
 #define LOG(...) \
 { \
     std::cout << __VA_ARGS__ << std::endl; \
 }
 #else
-#define CHECK_CUDA(call) call
 #define BREAK {}
 #define LOG(...) {}
 #endif
-
-#define DEFAULT_BLOCKSIZE 256
-#define DEFAULT_TILEWIDTH 32
