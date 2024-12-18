@@ -594,7 +594,6 @@ void train() {
             g_addRowsMatVec<<<grid_size, block_size, 0, streams[0]>>>(d_z_1, d_b_1, n, n_1);
             g_activReLU<<<grid_size, block_size, 0, streams[0]>>>(d_z_1, d_a_1, n, n_1);
         }
-        BREAK;
         LOG("Forwarded layer 1.");
 
         // a1 / z1
@@ -624,7 +623,6 @@ void train() {
             g_computeDerivReLU<<<grid_size, block_size, 0, streams[1]>>>(d_a_2, d_grad_a_2_z_2, n, n_2);
             cudaEventRecord(event_1_2, streams[1]);
         }
-        BREAK;
         LOG("a2 / z2");
 
         // Forward layer 3
@@ -676,7 +674,6 @@ void train() {
             CHECK_CUDA(cudaStreamWaitEvent(streams[2], event_0_10));
             g_mulMatsFirstTransposed<<<grid_size, block_size, 0, streams[2]>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
         }
-        BREAK;
         LOG("L/w3");
 
         // Update w3
