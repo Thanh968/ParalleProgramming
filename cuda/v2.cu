@@ -566,6 +566,7 @@ void train() {
         cudaStreamCreate(&streams[i]);
     }
 
+    cudaEvent_t event_0_6;
     cudaEvent_t event_0_10;
     cudaEvent_t event_0_11;
     cudaEvent_t event_0_12;
@@ -573,6 +574,7 @@ void train() {
     cudaEvent_t event_0_14;
     cudaEvent_t event_1_2;
 
+    CHECK_CUDA(cudaEventCreate(&event_0_6));
     CHECK_CUDA(cudaEventCreate(&event_0_10));
     CHECK_CUDA(cudaEventCreate(&event_0_11));
     CHECK_CUDA(cudaEventCreate(&event_0_12));
@@ -610,6 +612,7 @@ void train() {
             g_mulMats<<<grid_size, block_size, 0, streams[0]>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
             g_addRowsMatVec<<<grid_size, block_size, 0, streams[0]>>>(d_z_2, d_b_2, n, n_2);
             g_activReLU<<<grid_size, block_size, 0, streams[0]>>>(d_z_2, d_a_2, n, n_2);
+            CHECK_CUDA(cudaEventRecord(event_0_6, streams[0]));
         }
         LOG("Forwarded layer 2.");
 
@@ -617,6 +620,7 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            CHECK_CUDA(cudaStreamWaitEvent(streams[1], event_0_6));
             g_computeDerivReLU<<<grid_size, block_size, 0, streams[1]>>>(d_a_2, d_grad_a_2_z_2, n, n_2);
             cudaEventRecord(event_1_2, streams[1]);
         }
