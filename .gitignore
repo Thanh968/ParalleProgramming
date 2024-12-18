@@ -8,6 +8,7 @@ test.cpp
 *.weight
 *.png
 *.nsys-rep
+report*
 
 # Test
 test/

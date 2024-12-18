@@ -4,6 +4,12 @@
 
 #define DEFAULT_BLOCKSIZE 256
 #define DEFAULT_TILEWIDTH 32
+#define BM 128
+#define BN 8
+#define BK 128
+#define TM 8
+#define TK 8
+
 #define CHECK_CUDA(call)\
 {\
     const cudaError_t error = call;\

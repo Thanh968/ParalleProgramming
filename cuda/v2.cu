@@ -566,7 +566,10 @@ void train() {
         cudaStreamCreate(&streams[i]);
     }
 
+    cudaEvent_t event_0_3;
     cudaEvent_t event_0_6;
+    cudaEvent_t event_0_8;
+    cudaEvent_t event_0_9;
     cudaEvent_t event_0_10;
     cudaEvent_t event_0_11;
     cudaEvent_t event_0_12;
@@ -574,7 +577,10 @@ void train() {
     cudaEvent_t event_0_14;
     cudaEvent_t event_1_2;
 
+    CHECK_CUDA(cudaEventCreate(&event_0_3));
     CHECK_CUDA(cudaEventCreate(&event_0_6));
+    CHECK_CUDA(cudaEventCreate(&event_0_8));
+    CHECK_CUDA(cudaEventCreate(&event_0_9));
     CHECK_CUDA(cudaEventCreate(&event_0_10));
     CHECK_CUDA(cudaEventCreate(&event_0_11));
     CHECK_CUDA(cudaEventCreate(&event_0_12));
@@ -593,6 +599,7 @@ void train() {
             g_mulMats<<<grid_size, block_size, 0, streams[0]>>>(d_train_images, d_w_1, d_z_1, n, n_0, n_1);
             g_addRowsMatVec<<<grid_size, block_size, 0, streams[0]>>>(d_z_1, d_b_1, n, n_1);
             g_activReLU<<<grid_size, block_size, 0, streams[0]>>>(d_z_1, d_a_1, n, n_1);
+            CHECK_CUDA(cudaEventRecord(event_0_3, streams[0]));
         }
         LOG("Forwarded layer 1.");
 
@@ -600,9 +607,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            CHECK_CUDA(cudaStreamWaitEvent(streams[1], event_0_3));
             g_computeDerivReLU<<<grid_size, block_size, 0, streams[1]>>>(d_a_1, d_grad_a_1_z_1, n, n_1);
         }
-        LOG("a1 / z1")
+        LOG("a1 / z1");
 
         // Forward layer 2
         {
@@ -631,11 +639,13 @@ void train() {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_mulMats<<<grid_size, block_size, 0, streams[0]>>>(d_a_2, d_w_3, d_z_3, n, n_2, n_3);
             g_addRowsMatVec<<<grid_size, block_size, 0, streams[0]>>>(d_z_3, d_b_3, n, n_3);
+            CHECK_CUDA(cudaEventRecord(event_0_8, streams[0]));
         }
         {
             dim3 block_size(1, DEFAULT_BLOCKSIZE);
             dim3 grid_size(1, (n + block_size.y - 1) / block_size.y);
             g_activSoftmax<<<grid_size, block_size, 0, streams[0]>>>(d_z_3, d_a_3, n, n_3);
+            CHECK_CUDA(cudaEventRecord(event_0_9, streams[0]));
         }
         LOG("Forwarded layer 3.");
 
@@ -645,6 +655,7 @@ void train() {
             CHECK_CUDA(cudaMemsetAsync(d_count_correct_train, 0, sizeof(int), streams[2]));
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n + block_size.x - 1) / block_size.x);
+            CHECK_CUDA(cudaStreamWaitEvent(streams[2], event_0_8));
             g_computeAccuracy<<<grid_size, block_size, 0, streams[2]>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
             CHECK_CUDA(cudaMemcpyAsync(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost, streams[2]));
         }
@@ -654,6 +665,7 @@ void train() {
             train_loss = 0.0f;
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n + block_size.x - 1) / block_size.x);
+            CHECK_CUDA(cudaStreamWaitEvent(streams[1], event_0_9));
             g_computeCrossEntropy<<<grid_size, block_size, 0, streams[1]>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
             CHECK_CUDA(cudaMemcpyAsync(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost, streams[1]));
         }
@@ -808,18 +820,6 @@ void train() {
             CHECK_CUDA(cudaStreamSynchronize(streams[i]));
         }
 
-        {
-            train_acc = static_cast<float>(*h_count_correct_train) / n;
-            LOG("Epoch " << epoch << " completed. Train Accuracy: " << train_acc);
-        }
-
-        {
-            for (int i = 0; i < n; ++i) {
-                train_loss += h_loss_train[i];
-            }
-            LOG("Epoch " << epoch << " completed. Train Loss: " << train_loss);
-        }
-
         // Forward
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
@@ -881,6 +881,17 @@ void train() {
             LOG("Epoch " << epoch << " completed. Accuracy: " << acc);
         }
 
+        {
+            train_acc = static_cast<float>(*h_count_correct_train) / n;
+            LOG("Epoch " << epoch << " completed. Train Accuracy: " << train_acc);
+        }
+
+        {
+            for (int i = 0; i < n; ++i) {
+                train_loss += h_loss_train[i];
+            }
+            LOG("Epoch " << epoch << " completed. Train Loss: " << train_loss);
+        }
         CHECK_CUDA(cudaDeviceSynchronize());
         printf("Epoch %d completed.\n", epoch);
     }
