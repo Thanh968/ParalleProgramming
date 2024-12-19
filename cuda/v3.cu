@@ -295,7 +295,7 @@ __global__ void g_mulMats(float* mat_a, float* mat_b, float* mat_out, int m, int
     }
 }
 
-__global__ void g_matMuls2DBlocktiling(float* mat_a, float* mat_b, float* mat_out, int m, int n, int k) {
+__global__ void g_mulMats2DBlocktiling(float* mat_a, float* mat_b, float* mat_out, int m, int n, int k) {
     __shared__ float s_a[BM * BN];
     __shared__ float s_b[BN * BK];
     float results[TM * TK] = { 0.0f };
@@ -417,6 +417,72 @@ __global__ void g_mulMatsFirstTransposed(float* mat_a, float* mat_b, float* mat_
             out_rc += mat_a[i * m + r] * mat_b[i * k + c];
         }
         mat_out[r * k + c] = out_rc;
+    }
+}
+
+__global__ void g_mulMatsFirstTransposed2DBlocktiling(float* mat_a, float* mat_b, float* mat_out, int m, int n, int k) {
+    __shared__ float s_a[BM * BN];
+    __shared__ float s_b[BN * BK];
+    float results[TM * TK] = { 0.0f };
+    float r_m[TM] = { 0.0f };
+    float r_k[TK] = { 0.0f };
+
+    int offset_r = blockIdx.y * BM;
+    int offset_c = blockIdx.x * BK;
+
+    int num_elems = BM * BK;
+    int subtile_r = threadIdx.x / (BK / TK);
+    int subtile_c = threadIdx.x % (BK / TK);
+
+    mat_a += offset_r;
+    mat_b += offset_c;
+    mat_out += offset_r * k + offset_c;
+
+    int inner_row_a = threadIdx.x / BN;
+    int inner_col_a = threadIdx.x % BN;
+    int inner_row_b = threadIdx.x / BK;
+    int inner_col_b = threadIdx.x % BK;
+    int stride_a = blockDim.x / BN;
+    int stride_b = blockDim.x / BK;
+
+    for (int block_tile_offset = 0; block_tile_offset < n; block_tile_offset += BN) {
+        for (int offset = 0; offset < BM; offset += stride_a) {
+            s_a[(inner_row_a + offset) * BN + inner_col_a] = (offset_r + inner_row_a + offset < m && block_tile_offset + inner_col_a < n)
+                ? mat_a[(inner_col_a) * m + inner_row_a + offset]
+                : 0.0f;
+        }
+        for (int offset = 0; offset < BN; offset += stride_b) {
+            s_b[(inner_row_b + offset) * BK + inner_col_b] = (block_tile_offset + inner_row_b + offset < n && offset_c + inner_col_b < k)
+                ? mat_b[(inner_row_b + offset) * k + inner_col_b]
+                : 0.0f;
+        }
+        __syncthreads();
+
+        mat_a += BN * m;
+        mat_b += BN * k;
+
+        for (int curr_elem = 0; curr_elem < BN; ++curr_elem) {
+            for (int i = 0; i < TM; ++i) {
+                r_m[i] = s_a[(subtile_r * TM + i) * BN + curr_elem];
+            }
+            for (int i = 0; i < TK; ++i) {
+                r_k[i] = s_b[curr_elem * BK + subtile_c * TK + i];
+            }
+            for (int res_m_idx = 0; res_m_idx < TM; ++res_m_idx) {
+                for (int res_k_idx = 0; res_k_idx < TK; ++res_k_idx) {
+                    results[res_m_idx * TK + res_k_idx] += r_m[res_m_idx] * r_k[res_k_idx];
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    for (int res_m_idx = 0; res_m_idx < TM; ++res_m_idx) {
+        for (int res_k_idx = 0; res_k_idx < TK; ++res_k_idx) {
+            if (offset_r + subtile_r * TM + res_m_idx < m && offset_c + subtile_c * TK + res_k_idx < k) {
+                mat_out[(subtile_r * TM + res_m_idx) * k + subtile_c * TK + res_k_idx] = results[res_m_idx * TK + res_k_idx];
+            }
+        }
     }
 }
 
@@ -631,7 +697,7 @@ void train() {
         {
             dim3 block_size((BM * BK) / (TM * TK));
             dim3 grid_size((n_1 + BK - 1) / BK, (n + BM - 1) / BM);
-            g_matMuls2DBlocktiling<<<grid_size, block_size>>>(d_train_images, d_w_1, d_z_1, n, n_0, n_1);
+            g_mulMats2DBlocktiling<<<grid_size, block_size>>>(d_train_images, d_w_1, d_z_1, n, n_0, n_1);
         }
         BREAK;
         {
@@ -710,10 +776,15 @@ void train() {
         LOG("L/z3");
         // L / w3
         {
-            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
-            dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
-            g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
+            dim3 block_size((BM * BK) / (TM * TK));
+            dim3 grid_size((n_3 + BK - 1) / BK, (n_2 + BM - 1) / BM);
+            g_mulMatsFirstTransposed2DBlocktiling<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
         }
+        // {
+        //     dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+        //     dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
+        //     g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
+        // }
         // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         print(d_a_2, 1, n_2);
