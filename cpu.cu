@@ -94,6 +94,7 @@ void read_mnist(string filename, double* &inputData, unsigned int& number_of_ima
             }
         }
     }
+    file.close();
 }
 
 void read_labels_one_hot(string filename, double* inputLabel) {
@@ -189,12 +190,8 @@ void initialize_weights(double* weights, int n_in, int n_out)  {
 }
 
 void initialize_biases(double* bias, int n_in, int n_out) {
-    double stddev = sqrt(2.0 / n_in); 
     for (int i = 0; i < n_out; i++) {
-        double u1 = (double)rand() / RAND_MAX;
-        double u2 = (double)rand() / RAND_MAX;
-        double z = sqrt(-2.0 * log(u1)) * cos(2 * M_PI * u2); 
-        bias[i] = z * stddev;
+        bias[i] = double(rand()) / RAND_MAX * 2.0 - 1.0;
     }
 }
 
@@ -306,99 +303,6 @@ double accuracy(double* lastLayerResult, double* labels, int rows, int cols) {
     }
     double result = count / rows;
     return result;
-}
-
-// shuffle data
-
-void shuffle_data(double* data, double* one_hot_label, double* labels, int rows, int cols, int one_hot_cols) {
-    for (int row = rows - 1; row > 0; row--) {
-        int swap_row_index = rand() % (row + 1);
-
-        for (int col = 0; col < cols; col++) {
-            double temp = data[row * cols + col];
-            data[row * cols + col] = data[swap_row_index * cols + col];
-            data[swap_row_index * cols + col] = temp; 
-        }
-
-        // swap one hot label
-
-        for (int col = 0; col < one_hot_cols; col++) {
-            double temp = one_hot_label[row * one_hot_cols + col];
-            one_hot_label[row * one_hot_cols + col] = one_hot_label[swap_row_index * one_hot_cols + col];
-            one_hot_label[swap_row_index * one_hot_cols + col] = temp;
-        }
-
-        // swap label
-
-        double temp = labels[row];
-        labels[row] = labels[swap_row_index];
-        labels[swap_row_index] = temp;
-    }
-}
-
-// phan chia du lieu
-
-void split(double* data, double* one_hot_labels, double* labels, int rows, int cols, int one_hot_cols, \
-           double* train_data, double* train_one_hot, double* train_labels,\
-            double* val_data, double* val_one_hot, double* val_labels,\
-            double* test_data, double* test_one_hot, double* test_labels) {
-    int train_limit = TRAIN_RATE * rows;
-    int val_limit = (TRAIN_RATE + VAL_RATE) * rows;
-    int row = 0,train_index = 0, val_index = 0, test_index = 0;
-
-    while (row < train_limit) {
-        // copy data anh
-        for (int col = 0; col < cols; col++) {
-            train_data[train_index * cols + col] = data[row * cols + col];
-        }
-
-        // copy data one hot label
-        for (int col = 0; col < one_hot_cols; col++) {
-            train_one_hot[train_index * one_hot_cols + col] = one_hot_labels[row * one_hot_cols + col];
-        }
-
-        // copy label
-
-        train_labels[train_index] = labels[row];
-        row++;
-        train_index++;
-    }
-    
-    while (row < val_limit) {
-        // copy data anh
-        for (int col = 0; col < cols; col++) {
-            val_data[val_index * cols + col] = data[row * cols + col];
-        }
-
-        // copy data one hot label
-        for (int col = 0; col < one_hot_cols; col++) {
-            val_one_hot[val_index * one_hot_cols + col] = one_hot_labels[row * one_hot_cols + col];
-        }
-
-        // copy label
-
-        val_labels[val_index] = labels[row];
-        row++;
-        val_index++;
-    }
-
-    while (row < rows) {
-        // copy data anh
-        for (int col = 0; col < cols; col++) {
-            test_data[test_index * cols + col] = data[row * cols + col];
-        }
-
-        // copy data one hot label
-        for (int col = 0; col < one_hot_cols; col++) {
-            test_one_hot[test_index * one_hot_cols + col] = one_hot_labels[row * one_hot_cols + col];
-        }
-
-        // copy label
-
-        test_labels[test_index] = labels[row];
-        row++;
-        test_index++;
-    }
 }
 
 void backwardNN(double* transposedMatrix, double* delta, double* gradient, int inHiddenLayerSize, int numSample, int outHiddenLayerSize) {
@@ -559,13 +463,78 @@ void trainNN(double* train_data, double* train_one_hot_labels, double* train_lab
     free(firstBiasGradient);
 }
 
+void readArrayFromFile(string filename, double* weight_1, double* weight_2, double* weight_3, double* bias_1, double* bias_2, double* bias_3, int inputLayerSize, int firstHiddenLayerSize, int secondHiddentLayerSize, int lastHiddenLayerSize) {
+    // Mở file để đọc
+    ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Can not open file\n";
+        return;
+    }
+
+    // Đọc từng dòng và chuyển sang số thực
+    double value;
+    int count = 0;
+
+    while (count < firstHiddenLayerSize * inputLayerSize) { 
+        file >> value;
+        weight_1[count] = value;
+        count++;
+    }
+
+    count = 0;
+
+    while (count < firstHiddenLayerSize) { 
+        file >> value;
+        bias_1[count] = value;
+        count++;
+    }
+
+    count = 0; 
+
+    while (count < firstHiddenLayerSize * secondHiddentLayerSize) { 
+        file >> value;
+        weight_2[count] = value;
+        count++;
+    }
+
+    count = 0;
+
+    while (count < secondHiddentLayerSize) { 
+        file >> value;
+        bias_2[count] = value;
+        count++;
+    }
+
+    count = 0;
+
+    while (count < secondHiddentLayerSize * lastHiddenLayerSize) { 
+        file >> value;
+        weight_3[count] = value;
+        count++;
+    }
+
+    count = 0;
+
+    while (count < lastHiddenLayerSize) { 
+        file >> value;
+        bias_3[count] = value;
+        count++;
+    }
+
+
+    // Đóng file
+    file.close();
+    std::cout << "Complete reading file '" << filename << "'.\n";
+}
+
 int main() {
     srand(static_cast<unsigned>(time(0)));
     // Data file
-    string filename = "train-images-idx3-ubyte";
-    string nameOfLabelFile = "train-labels-idx1-ubyte";
-    string valFileName = "val-images-idx3-ubyte";
-    string valLabelFileName = "val-labels-idx1-ubyte";
+    string filename = "data/train-images-idx3-ubyte";
+    string nameOfLabelFile = "data/train-labels-idx1-ubyte";
+    string valFileName = "data/val-images-idx3-ubyte";
+    string valLabelFileName = "data/val-labels-idx1-ubyte";
+    string weightFile = "weight.txt";
 
     // Input data
     double* input_data = NULL;
@@ -628,9 +597,9 @@ int main() {
     secondHiddenLayerWeight = (double*)malloc(sizeOfSecondWeight * sizeof(double));
     lastHiddenLayerWeight = (double*)malloc(sizeOfLastWeight * sizeof(double));
 
-    initialize_weights(firstHiddenLayerWeight,inputLayerSize,firstHiddenLayerSize);
-    initialize_weights(secondHiddenLayerWeight, firstHiddenLayerSize, secondHiddenLayerSize);
-    initialize_weights(lastHiddenLayerWeight, secondHiddenLayerSize, lastHiddenLayerSize);
+    // initialize_weights(firstHiddenLayerWeight,inputLayerSize,firstHiddenLayerSize);
+    // initialize_weights(secondHiddenLayerWeight, firstHiddenLayerSize, secondHiddenLayerSize);
+    // initialize_weights(lastHiddenLayerWeight, secondHiddenLayerSize, lastHiddenLayerSize);
 
     // Khoi tao bias
     double* firstBiases = NULL;
@@ -641,9 +610,11 @@ int main() {
     secondBiases = (double*)malloc(secondHiddenLayerSize * sizeof(double));
     lastBiases = (double*)malloc(lastHiddenLayerSize * sizeof(double));
 
-    initialize_biases(firstBiases, inputLayerSize, firstHiddenLayerSize);
-    initialize_biases(secondBiases, firstHiddenLayerSize, secondHiddenLayerSize);
-    initialize_biases(lastBiases, secondHiddenLayerSize, lastHiddenLayerSize);
+    // initialize_biases(firstBiases, inputLayerSize, firstHiddenLayerSize);
+    // initialize_biases(secondBiases, firstHiddenLayerSize, secondHiddenLayerSize);
+    // initialize_biases(lastBiases, secondHiddenLayerSize, lastHiddenLayerSize);
+
+    readArrayFromFile(weightFile, firstHiddenLayerWeight, secondHiddenLayerWeight, lastHiddenLayerWeight, firstBiases, secondBiases, lastBiases, inputLayerSize, firstHiddenLayerSize, secondHiddenLayerSize, lastHiddenLayerSize);
 
     for (int label = 0; label < 10; label++) {
         unsigned int count = 0;
