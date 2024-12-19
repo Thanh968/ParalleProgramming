@@ -857,24 +857,24 @@ void train() {
         }
         LOG("Forwarded layer 3.");
 
-        // compute accuracy
-        {
-            CHECK_CUDA(cudaMemsetAsync(d_count_correct_train, 0, sizeof(int), streams[2]));
-            dim3 block_size(DEFAULT_BLOCKSIZE);
-            dim3 grid_size((n + block_size.x - 1) / block_size.x);
-            CHECK_CUDA(cudaStreamWaitEvent(streams[2], event_0_8));
-            g_computeAccuracy<<<grid_size, block_size, 0, streams[2]>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
-            CHECK_CUDA(cudaMemcpyAsync(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost, streams[2]));
-        }
+        // // compute accuracy
+        // {
+        //     CHECK_CUDA(cudaMemsetAsync(d_count_correct_train, 0, sizeof(int), streams[2]));
+        //     dim3 block_size(DEFAULT_BLOCKSIZE);
+        //     dim3 grid_size((n + block_size.x - 1) / block_size.x);
+        //     CHECK_CUDA(cudaStreamWaitEvent(streams[2], event_0_8));
+        //     g_computeAccuracy<<<grid_size, block_size, 0, streams[2]>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
+        //     CHECK_CUDA(cudaMemcpyAsync(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost, streams[2]));
+        // }
 
-        // compute loss
-        {
-            dim3 block_size(DEFAULT_BLOCKSIZE);
-            dim3 grid_size((n + block_size.x - 1) / block_size.x);
-            CHECK_CUDA(cudaStreamWaitEvent(streams[1], event_0_9));
-            g_computeCrossEntropy<<<grid_size, block_size, 0, streams[1]>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
-            CHECK_CUDA(cudaMemcpyAsync(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost, streams[1]));
-        }
+        // // compute loss
+        // {
+        //     dim3 block_size(DEFAULT_BLOCKSIZE);
+        //     dim3 grid_size((n + block_size.x - 1) / block_size.x);
+        //     CHECK_CUDA(cudaStreamWaitEvent(streams[1], event_0_9));
+        //     g_computeCrossEntropy<<<grid_size, block_size, 0, streams[1]>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
+        //     CHECK_CUDA(cudaMemcpyAsync(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost, streams[1]));
+        // }
 
         // L / z3
         {
@@ -1054,6 +1054,25 @@ void train() {
 
         for (int i = 0; i < num_streams; ++i) {
             CHECK_CUDA(cudaStreamSynchronize(streams[i]));
+        }
+
+        CHECK_CUDA(cudaDeviceSynchronize());
+
+        // compute accuracy
+        {
+            CHECK_CUDA(cudaMemset(d_count_correct_train, 0, sizeof(int)));
+            dim3 block_size(DEFAULT_BLOCKSIZE);
+            dim3 grid_size((n + block_size.x - 1) / block_size.x);
+            g_computeAccuracy<<<grid_size, block_size>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
+            CHECK_CUDA(cudaMemcpy(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost));
+        }
+
+        // compute loss
+        {
+            dim3 block_size(DEFAULT_BLOCKSIZE);
+            dim3 grid_size((n + block_size.x - 1) / block_size.x);
+            g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
+            CHECK_CUDA(cudaMemcpy(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost));
         }
 
         CHECK_CUDA(cudaDeviceSynchronize());

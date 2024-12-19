@@ -796,7 +796,7 @@ void train() {
             for (int i = 0; i < n; ++i) {
                 loss += h_loss_train[i];
             }
-            LOG("Epoch " << epoch << " completed. Train Loss: " << loss);
+            LOG("Epoch " << epoch << " completed. Train Loss: " << loss / n);
         }
 
         //compute accuracy
@@ -858,7 +858,7 @@ void train() {
             for (int i = 0; i < n; ++i) {
                 loss += h_loss_infer[i];
             }
-            LOG("Epoch " << epoch << " completed. Loss: " << loss);
+            LOG("Epoch " << epoch << " completed. Loss: " << loss / n_infer);
         }
 
         //compute accuracy
