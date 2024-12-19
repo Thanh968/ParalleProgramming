@@ -5,7 +5,7 @@
 #include <exception>
 #include <vector>
 #include <curand_kernel.h>
-#define M_PI 3.14159265358979323846
+
 using namespace std;
 
 bool infer_mode = false;
@@ -19,7 +19,7 @@ int num_train_images;
 int num_val_images;
 
 int num_epochs = 10;
-constexpr float learning_rate = 0.05f;
+constexpr float learning_rate = 1e-1f;
 
 constexpr int image_height = 28;
 constexpr int image_width = 28;
@@ -141,10 +141,6 @@ uint8_t* readImagesIntoHostMemory(string& file_path, int& num_images) {
 
     for (int i = 0; i < num_images; ++i) {
         file.read(reinterpret_cast<char*>(&images[i * num_pixels_per_image]), num_pixels_per_image * sizeof(uint8_t));
-        for(int j=0;j<num_pixels_per_image;++j){
-            images[i*num_pixels_per_image+j] = images[i*num_pixels_per_image+j]/255.0;
-
-        }
     }
 
     file.close();
@@ -174,24 +170,8 @@ uint8_t* readLabelsIntoHostMemory(string& file_path) {
         onehot_labels[i * num_categories + labels[i]] = 1;
     }
 
-    int *key_value = new int[10];
-
-    for(int i=0;i<10;++i){
-        key_value[i] = 0;
-    }
-    
-    for (int i = 0; i < 10; ++i) {
-        for (int j = 0; j < num_labels; ++j) {
-            if (labels[j] == i) {
-                key_value[i] += 1;
-            }
-        }
-        cout <<"Label: " << i << " Count: " << key_value[i] << endl;
-    }
-
     file.close();
     delete[] labels;
-    delete[] key_value;
     return onehot_labels;
 }
 
@@ -204,7 +184,7 @@ void initData(string images_path, string labels_path, float*& d_images, float*& 
     CHECK_CUDA(cudaMallocHost((void**)&h_images_pinned, num_images * num_pixels_per_image * sizeof(float)));
     CHECK_CUDA(cudaMallocHost((void**)&h_labels_pinned, num_images * num_categories * sizeof(float)));
     for (int i = 0; i < num_images * num_pixels_per_image; ++i) {
-        h_images_pinned[i] = static_cast<float>(h_images[i]);
+        h_images_pinned[i] = static_cast<float>(h_images[i]) / 255.0f;
     }
     for (int i = 0; i < num_images * num_categories; ++i) {
         h_labels_pinned[i] = static_cast<float>(h_labels[i]);
@@ -281,16 +261,24 @@ __global__ void g_transferAndConvertHTD(uint8_t* h_data, float* d_data, int n) {
     }
 }
 
-__global__ void g_randomizeValues(float* a, int n_in,int n_out, unsigned long long seed = 666) {
+__global__ void g_heWeightInitialization(float* d_weights, int m, int n, unsigned long long seed) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int n= n_in * n_out;
+    int total_size = m * n;
+    if (idx >= total_size) return;
+
+    curandState state;
+    curand_init(seed, idx, 0, &state);
+    float random_normal = curand_normal(&state);
+    float stddev = sqrtf(2.0f / (float)m);
+    d_weights[idx] = random_normal * stddev;
+}
+
+__global__ void g_randomizeValues(float* a, int n, unsigned long long seed = 666) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
-        float stddev = sqrt(2.0 / n);
         curandState state;
         curand_init(seed, idx, 0, &state);
-        float val1=curand_uniform(&state);
-        float val2=curand_uniform(&state);
-        a[idx] = sqrt(-2 * log(val1)) * cos(2 * M_PI * val2) * stddev;
+        a[idx] = curand_uniform(&state) * 2.0f - 1.0f;
     }
 }
 
@@ -327,21 +315,15 @@ __global__ void g_activSoftmax(float* mat_in, float* mat_out, int m, int n) {
     int r = blockIdx.y * blockDim.y + threadIdx.y;
     if (r >= m) return;
 
-    float maxVal = -INFINITY;
     float sumExp = 0.0;
 
     for (int c = 0; c < n; c++) {
-        maxVal = fmaxf(maxVal, mat_in[r * n + c]);
-    }
-
-    for (int c = 0; c < n; c++) {
-        mat_out[r * n + c] = expf(mat_in[r * n + c] - maxVal);
+        mat_out[r * n + c] = expf(mat_in[r * n + c]);
         sumExp += mat_out[r * n + c];
     }
 
     for (int c = 0; c < n; c++) {
         mat_out[r * n + c] /= sumExp;
-        mat_out[r * n + c] = max(mat_out[r * n + c], 0.001f);
     }
 }
 
@@ -362,7 +344,7 @@ __global__ void g_mulMatsFirstTransposed(float* mat_a, float* mat_b, float* mat_
         for (int i = 0; i < n; ++i) {
             out_rc += mat_a[i * m + r] * mat_b[i * k + c];
         }
-        mat_out[r * k + c] = out_rc/m;
+        mat_out[r * k + c] = out_rc/n;
     }
 }
 
@@ -375,7 +357,7 @@ __global__ void g_mulMatsSecondTransposed(float* mat_a, float* mat_b, float* mat
         for (int i = 0; i < n; ++i) {
             out_rc += mat_a[r * n + i] * mat_b[c * n + i];
         }
-        mat_out[r * k + c] = out_rc;
+        mat_out[r * k + c] = out_rc/m;
     }
 }
 
@@ -443,8 +425,7 @@ __global__ void g_computeCrossEntropy(float* y_pred, float* y_true, float* resul
         float sumImage = 0.0;
         for (int j = 0; j < cols; j++) {
             int index = row * cols + j;
-            float epsilon = 1e-8;
-            sumImage += y_true[index] * log(max(y_pred[index], epsilon));
+            sumImage += y_true[index] * log(y_pred[index]);
         }
         result[row] = -sumImage;
     }
@@ -469,7 +450,18 @@ __global__ void g_computeAccuracy(float* y_pred, float* y_true, int* correct, in
     }
 }
 
-
+void print(float* d_data, int m, int n) {
+    float* h_data;
+    CHECK_CUDA(cudaMallocHost((void**)&h_data, m * n * sizeof(float)));
+    CHECK_CUDA(cudaMemcpy(h_data, d_data, m * n * sizeof(float), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j < n; ++j) {
+            printf("%f ", h_data[i * n + j]);
+        }
+        printf("\n");
+    }
+    CHECK_CUDA(cudaFreeHost(h_data));
+}
 
 void train() {
     float* d_train_images;
@@ -528,32 +520,36 @@ void train() {
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
         dim3 grid_size((n_0 * n_1 + block_size.x - 1) / block_size.x);
-        g_randomizeValues<<<grid_size, block_size>>>(d_w_1, n_0 , n_1, random_seed);
+        // g_randomizeValues<<<grid_size, block_size>>>(d_w_1, n_0 * n_1, random_seed);
+        g_heWeightInitialization<<<grid_size, block_size>>>(d_w_1, n_0, n_1, random_seed);
     }
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
         dim3 grid_size((n_1 + block_size.x - 1) / block_size.x);
-        g_randomizeValues<<<grid_size, block_size>>>(d_b_1,n_0, n_1, random_seed);
+        g_randomizeValues<<<grid_size, block_size>>>(d_b_1, n_1, random_seed);
     }
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
         dim3 grid_size((n_1 * n_2 + block_size.x - 1) / block_size.x);
-        g_randomizeValues<<<grid_size, block_size>>>(d_w_2, n_1 , n_2, random_seed);
+        // g_randomizeValues<<<grid_size, block_size>>>(d_w_2, n_1 * n_2, random_seed);
+        g_heWeightInitialization<<<grid_size, block_size>>>(d_w_2, n_1, n_2, random_seed);
+
     }
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
         dim3 grid_size((n_2 + block_size.x - 1) / block_size.x);
-        g_randomizeValues<<<grid_size, block_size>>>(d_b_2, n_1,n_2, random_seed);
+        g_randomizeValues<<<grid_size, block_size>>>(d_b_2, n_2, random_seed);
     }
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
         dim3 grid_size((n_2 * n_3 + block_size.x - 1) / block_size.x);
-        g_randomizeValues<<<grid_size, block_size>>>(d_w_3, n_2 , n_3, random_seed);
+        // g_randomizeValues<<<grid_size, block_size>>>(d_w_3, n_2 * n_3, random_seed);
+        g_heWeightInitialization<<<grid_size, block_size>>>(d_w_3, n_2, n_3, random_seed);
     }
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
         dim3 grid_size((n_3 + block_size.x - 1) / block_size.x);
-        g_randomizeValues<<<grid_size, block_size>>>(d_b_3,n_2, n_3, random_seed);
+        g_randomizeValues<<<grid_size, block_size>>>(d_b_3, n_3, random_seed);
     }
     CHECK_CUDA(cudaDeviceSynchronize());
     LOG("Weights initialized.");
@@ -567,7 +563,6 @@ void train() {
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_1, d_b_1, n, n_1);
             g_activReLU<<<grid_size, block_size>>>(d_z_1, d_a_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("Forwarded layer 1.");
         {
@@ -576,8 +571,8 @@ void train() {
             g_mulMats<<<grid_size, block_size>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2, d_b_2, n, n_2);
             g_activReLU<<<grid_size, block_size>>>(d_z_2, d_a_2, n, n_2);
+            BREAK; print(d_a_2, 2, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("Forwarded layer 2.");
         {
@@ -586,16 +581,17 @@ void train() {
             g_mulMats<<<grid_size, block_size>>>(d_a_2, d_w_3, d_z_3, n, n_2, n_3);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_3, d_b_3, n, n_3);
         }
+        BREAK;
         {
             dim3 block_size(1, DEFAULT_BLOCKSIZE);
-            dim3 grid_size(1, (n + block_size.x - 1) / block_size.y);
+            dim3 grid_size(1, (n + block_size.y - 1) / block_size.y);
             g_activSoftmax<<<grid_size, block_size>>>(d_z_3, d_a_3, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
+        print(d_z_3 + (n - 18) * n_3, 18, n_3);
+        printf("---\n");
+        print(d_a_3 + (n - 18) * n_3, 18, n_3);
         LOG("Forwarded layer 3.");
-
-
         // compute loss
         {
             float loss = 0.0f;
@@ -603,19 +599,9 @@ void train() {
             dim3 grid_size((n + block_size.x - 1) / block_size.x);
             g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
             CHECK_CUDA(cudaMemcpy(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost));
+            print(d_loss_train + n - 18, 18, 1);
             for (int i = 0; i < n; ++i) {
                 loss += h_loss_train[i];
-                if(isnan(h_loss_train[i]))
-                printf("index: %d\n", i);
-            }
-
-            float * h_a_3 = new float[n*n_3];
-            CHECK_CUDA(cudaMemcpy(h_a_3, d_a_3, n*n_3*sizeof(float), cudaMemcpyDeviceToHost));
-            //KIểm tra xem có h_a_3 nào nan không
-            for(int i=0;i<n*n_3;++i){
-                if(isnan(h_a_3[i])){
-                    printf("index h_a_3: %d\n", i);
-                }
             }
             loss /= n;
             LOG("Epoch " << epoch << " completed. Train Loss: " << loss);
@@ -627,14 +613,14 @@ void train() {
             CHECK_CUDA(cudaMemset(d_count_correct_train, 0, sizeof(int)));
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n + block_size.x - 1) / block_size.x);
-            g_computeAccuracy<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_count_correct_train, n, n_3);
+            g_computeAccuracy<<<grid_size, block_size>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
             CHECK_CUDA(cudaMemcpy(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost));
             CHECK_CUDA(cudaDeviceSynchronize());
             acc = static_cast<float>(*h_count_correct_train) / n;
             LOG("Epoch " << epoch << " completed. Train Accuracy: " << acc);
-
         }
 
+        // -------------------------------
         // Backward
         // L / z3
         {
@@ -642,7 +628,7 @@ void train() {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_subRowsMats<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_grad_z_3, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("L/z3");
         // L / w3
@@ -651,8 +637,10 @@ void train() {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
+        print(d_a_2, 1, n_2);
+        print(d_grad_w_3, 1, n_3);
         LOG("L/w3");
         // L / b3
         // {
@@ -861,40 +849,6 @@ void train() {
         BREAK;
         LOG("Forwarded layer 3.");
 
-        {
-            float* h;
-            int n_test = 10;
-            CHECK_CUDA(cudaMallocHost((void**)&h, sizeof(float) * n_test * num_categories));
-            CHECK_CUDA(cudaMemcpy(h, d_a_3_infer, n_test * num_categories * sizeof(float), cudaMemcpyDeviceToHost));
-            for (int k = 0; k < n_test; ++k) {
-                for (int i = 0; i < num_categories; ++i) {
-                    printf("%f ", h[k * num_categories + i]);
-                }
-                printf("\n");
-            }
-            printf("\n");
-            CHECK_CUDA(cudaMemcpy(h, d_val_labels, n_test * num_categories * sizeof(float), cudaMemcpyDeviceToHost));
-            for (int k = 0; k < n_test; ++k) {
-                for (int i = 0; i < num_categories; ++i) {
-                    printf("%f ", h[k * num_categories + i]);
-                }
-                printf("\n");
-            }
-            CHECK_CUDA(cudaFreeHost(h));
-
-
-            //tính accuracy với n_test
-            float acc = 0.0f;
-            CHECK_CUDA(cudaMemset(d_count_correct_infer, 0, sizeof(int)));
-            dim3 block_size(DEFAULT_BLOCKSIZE);
-            dim3 grid_size((n_test + block_size.x - 1) / block_size.x);
-            g_computeAccuracy<<<grid_size, block_size>>>(d_a_3_infer, d_val_labels, d_count_correct_infer, n_test, n_3);
-            CHECK_CUDA(cudaMemcpy(h_count_correct_infer, d_count_correct_infer, sizeof(int), cudaMemcpyDeviceToHost));
-            acc = static_cast<float>(*h_count_correct_infer);
-            LOG("n_test " << epoch << " completed. Accuracy: " << acc);
-
-        }
-
         // compute loss
         {
             float loss = 0.0f;
@@ -902,10 +856,10 @@ void train() {
             dim3 grid_size((n_infer + block_size.x - 1) / block_size.x);
             g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3_infer, d_val_labels, d_loss_infer, n_infer, n_3);
             CHECK_CUDA(cudaMemcpy(h_loss_infer, d_loss_infer, n_infer * sizeof(float), cudaMemcpyDeviceToHost));
-            for (int i = 0; i < n_infer; ++i) {
+            for (int i = 0; i < n; ++i) {
                 loss += h_loss_infer[i];
             }
-            loss /= n_infer;
+            loss/=n_infer;
             LOG("Epoch " << epoch << " completed. Loss: " << loss);
         }
 
@@ -918,7 +872,7 @@ void train() {
             g_computeAccuracy<<<grid_size, block_size>>>(d_a_3_infer, d_val_labels, d_count_correct_infer, n_infer, n_3);
             CHECK_CUDA(cudaMemcpy(h_count_correct_infer, d_count_correct_infer, sizeof(int), cudaMemcpyDeviceToHost));
             acc = static_cast<float>(*h_count_correct_infer) / n_infer;
-            LOG("Epoch " << epoch << " completed. Accuracy: " << acc);
+            //LOG("Epoch " << epoch << " completed. Accuracy: " << acc);
         }
 
         CHECK_CUDA(cudaDeviceSynchronize());
