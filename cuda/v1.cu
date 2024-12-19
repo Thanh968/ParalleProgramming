@@ -323,13 +323,13 @@ __global__ void g_activSoftmax(float* mat_in, float* mat_out, int m, int n) {
     }
 
     for (int c = 0; c < n; c++) {
-        mat_out[r * n + c] = expf(mat_in[r * n + c] - maxVal);
+        mat_out[r * n + c] = expf(mat_in[r * n + c]);
         sumExp += mat_out[r * n + c];
     }
 
     for (int c = 0; c < n; c++) {
         mat_out[r * n + c] /= sumExp;
-        mat_out[r * n + c] = max(mat_out[r * n + c], 0.001f);
+        // mat_out[r * n + c] = max(mat_out[r * n + c], 0.001f);
     }
 }
 

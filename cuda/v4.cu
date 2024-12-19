@@ -389,13 +389,13 @@ __global__ void g_activSoftmax(float* mat_in, float* mat_out, int m, int n) {
     }
 
     for (int c = 0; c < n; c++) {
-        mat_out[r * n + c] = expf(mat_in[r * n + c] - maxVal);
+        mat_out[r * n + c] = expf(mat_in[r * n + c]);
         sumExp += mat_out[r * n + c];
     }
 
     for (int c = 0; c < n; c++) {
         mat_out[r * n + c] /= sumExp;
-        mat_out[r * n + c] = max(mat_out[r * n + c], 0.001f);
+        // mat_out[r * n + c] = max(mat_out[r * n + c], 0.001f);
     }
 }
 
@@ -1091,7 +1091,7 @@ void train() {
         // Compute train accuracy
         {
             train_acc = static_cast<float>(*h_count_correct_train) / n;
-            LOG("Train Accuracy: " << train_acc);
+            cout << "Train Accuracy: " << train_acc << endl;
         }
 
         // Compute train loss
@@ -1100,7 +1100,7 @@ void train() {
             for (int i = 0; i < n; ++i) {
                 train_loss += h_loss_train[i];
             }
-            LOG("Train Loss: " << train_loss);
+            cout << "Train Loss: " << train_loss / n << endl;
         }
 
         // Compute validation accuracy
@@ -1112,7 +1112,7 @@ void train() {
             g_computeAccuracy<<<grid_size, block_size>>>(d_a_3_infer, d_val_labels, d_count_correct_infer, n_infer, n_3);
             CHECK_CUDA(cudaMemcpy(h_count_correct_infer, d_count_correct_infer, sizeof(int), cudaMemcpyDeviceToHost));
             acc = static_cast<float>(*h_count_correct_infer) / n_infer;
-            LOG("Validation Accuracy: " << acc);
+            cout << "Validation Accuracy: " << acc << endl;
         }
 
         // Compute validation loss
@@ -1122,10 +1122,11 @@ void train() {
             dim3 grid_size((n_infer + block_size.x - 1) / block_size.x);
             g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3_infer, d_val_labels, d_loss_infer, n_infer, n_3);
             CHECK_CUDA(cudaMemcpy(h_loss_infer, d_loss_infer, n_infer * sizeof(float), cudaMemcpyDeviceToHost));
+            
             for (int i = 0; i < n; ++i) {
                 loss += h_loss_infer[i];
             }
-            LOG("Validation Loss: " << loss);
+            cout << "Validation Loss: " << loss / n_infer << endl;
         }
 
         CHECK_CUDA(cudaDeviceSynchronize());
