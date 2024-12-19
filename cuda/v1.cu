@@ -19,7 +19,7 @@ int num_train_images;
 int num_val_images;
 
 int num_epochs = 10;
-constexpr float learning_rate = 1e-5f;
+constexpr float learning_rate = 1e-1f;
 
 constexpr int image_height = 28;
 constexpr int image_width = 28;
@@ -350,7 +350,7 @@ __global__ void g_mulMatsFirstTransposed(float* mat_a, float* mat_b, float* mat_
         for (int i = 0; i < n; ++i) {
             out_rc += mat_a[i * m + r] * mat_b[i * k + c];
         }
-        mat_out[r * k + c] = out_rc;
+        mat_out[r * k + c] = out_rc/n;
     }
 }
 
@@ -396,7 +396,7 @@ __global__ void g_sumColsMat(float* mat, float* vec_out, int m, int n) {
     for (int i = 0; i < m; ++i) {
         sum += mat[i * n + c];
     }
-    vec_out[c] = sum;
+    vec_out[c] = sum/m;
 }
 
 __global__ void g_mulMatsElemWise(float* mat_a, float* mat_b, float* mat_out, int m, int n) {

@@ -19,7 +19,7 @@ int num_train_images;
 int num_val_images;
 
 int num_epochs = 10;
-constexpr float learning_rate = 1e-5f;
+constexpr float learning_rate = 1e-1f;
 
 constexpr int image_height = 28;
 constexpr int image_width = 28;
@@ -416,7 +416,7 @@ __global__ void g_mulMatsFirstTransposed(float* mat_a, float* mat_b, float* mat_
         for (int i = 0; i < n; ++i) {
             out_rc += mat_a[i * m + r] * mat_b[i * k + c];
         }
-        mat_out[r * k + c] = out_rc;
+        mat_out[r * k + c] = out_rc/n;
     }
 }
 
@@ -480,7 +480,7 @@ __global__ void g_mulMatsFirstTransposed2DBlocktiling(float* mat_a, float* mat_b
     for (int res_m_idx = 0; res_m_idx < TM; ++res_m_idx) {
         for (int res_k_idx = 0; res_k_idx < TK; ++res_k_idx) {
             if (offset_r + subtile_r * TM + res_m_idx < m && offset_c + subtile_c * TK + res_k_idx < k) {
-                mat_out[(subtile_r * TM + res_m_idx) * k + subtile_c * TK + res_k_idx] = results[res_m_idx * TK + res_k_idx];
+                mat_out[(subtile_r * TM + res_m_idx) * k + subtile_c * TK + res_k_idx] = results[res_m_idx * TK + res_k_idx]/n;
             }
         }
     }
@@ -594,7 +594,7 @@ __global__ void g_sumColsMat(float* mat, float* vec_out, int m, int n) {
     for (int i = 0; i < m; ++i) {
         sum += mat[i * n + c];
     }
-    vec_out[c] = sum;
+    vec_out[c] = sum/m;
 }
 
 __global__ void g_mulMatsElemWise(float* mat_a, float* mat_b, float* mat_out, int m, int n) {
