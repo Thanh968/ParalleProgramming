@@ -1,12 +1,9 @@
 #include "common.hpp"
 
-#include <fstream>
 #include <cstdint>
 #include <exception>
-#include <vector>
 #include <curand_kernel.h>
 
-using namespace std;
 
 bool infer_mode = false;
 string train_images_path;

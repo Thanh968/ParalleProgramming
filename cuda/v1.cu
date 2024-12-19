@@ -1,12 +1,9 @@
 #include "common.hpp"
 
-#include <fstream>
 #include <cstdint>
 #include <exception>
-#include <vector>
 #include <curand_kernel.h>
 
-using namespace std;
 
 bool infer_mode = false;
 string train_images_path;
@@ -522,6 +519,36 @@ void train() {
     CHECK_CUDA(cudaMallocHost((void**)&h_count_correct_infer, sizeof(int)));
     CHECK_CUDA(cudaMalloc((void**)&d_count_correct_infer, sizeof(int)));
 
+
+    vector<float> forward1_time;
+    vector<float> forward2_time;
+    vector<float> forward3_time;
+
+    vector<float> compute_derivReLU1_time;
+    vector<float> compute_derivReLU2_time;
+
+    vector<float> compute_softmax_time;
+
+    vector<float> compute_grad_z3_time; // subRowsMats
+    vector<float> compute_grad_z2_time; // mulMatElemWise
+    vector<float> compute_grad_z1_time; // mulMatElemWise
+
+    vector<float> compute_grad_w3_time; // mulMatFirstTranspose
+    vector<float> compute_grad_w2_time; // mulMatFirstTranspose
+    vector<float> compute_grad_w1_time; // mulMatFirstTranspose
+
+    vector<float> compute_grad_b3_time; // sumColsMat
+    vector<float> compute_grad_b2_time; // sumColsMat
+    vector<float> compute_grad_b1_time; // sumColsMat
+
+    vector<float> compute_grad_a2_time; // mulMatSecondTranspose
+    vector<float> compute_grad_a1_time; // mulMatSecondTranspose
+
+    vector<float> update_time;
+    GpuTimer timer;
+
+    float temp_time=0.0f;
+    float update_time_temp=0.0f;
     unsigned long long random_seed = 666;
     {
         dim3 block_size(DEFAULT_BLOCKSIZE);
@@ -565,32 +592,46 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMats<<<grid_size, block_size>>>(d_train_images, d_w_1, d_z_1, n, n_0, n_1);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_1, d_b_1, n, n_1);
             g_activReLU<<<grid_size, block_size>>>(d_z_1, d_a_1, n, n_1);
+            timer.Stop();
+            forward1_time.push_back(timer.Elapsed());
         }
         BREAK;
         LOG("Forwarded layer 1.");
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMats<<<grid_size, block_size>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2, d_b_2, n, n_2);
             g_activReLU<<<grid_size, block_size>>>(d_z_2, d_a_2, n, n_2);
+            timer.Stop();
+            forward2_time.push_back(timer.Elapsed());
         }
         BREAK;
         LOG("Forwarded layer 2.");
         {
+            temp_time = 0.0f;
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMats<<<grid_size, block_size>>>(d_a_2, d_w_3, d_z_3, n, n_2, n_3);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_3, d_b_3, n, n_3);
+            timer.Stop();
+            temp_time = timer.Elapsed();
         }
         BREAK;
         {
             dim3 block_size(1, DEFAULT_BLOCKSIZE);
             dim3 grid_size(1, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_activSoftmax<<<grid_size, block_size>>>(d_z_3, d_a_3, n, n_3);
+            timer.Stop();
+            compute_softmax_time.push_back(timer.Elapsed());
+            forward3_time.push_back(temp_time + timer.Elapsed());
         }
         BREAK;
         LOG("Forwarded layer 3.");
@@ -601,7 +642,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_subRowsMats<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_grad_z_3, n, n_3);
+            timer.Stop();
+            compute_grad_z3_time.push_back(timer.Elapsed());
         }
         // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -610,7 +654,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
+            timer.Stop();
+            compute_grad_w3_time.push_back(timer.Elapsed());
         }
         // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -624,7 +671,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_sumColsMat<<<grid_size, block_size>>>(d_grad_z_3, d_grad_b_3, n, n_3);
+            timer.Stop();
+            compute_grad_b3_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -633,7 +683,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
+            timer.Start();
             g_mulMatsSecondTransposed<<<grid_size, block_size>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
+            timer.Stop();
+            compute_grad_a2_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -642,7 +695,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_computeDerivReLU<<<grid_size, block_size>>>(d_a_2, d_grad_a_2_z_2, n, n_2);
+            timer.Stop();
+            compute_derivReLU2_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -651,7 +707,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMatsElemWise<<<grid_size, block_size>>>(d_grad_a_2, d_grad_a_2_z_2, d_grad_z_2, n, n_2);
+            timer.Stop();
+            compute_grad_z2_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -660,7 +719,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_1 + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_1, d_grad_z_2, d_grad_w_2, n_1, n, n_2);
+            timer.Stop();
+            compute_grad_w2_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -674,7 +736,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_sumColsMat<<<grid_size, block_size>>>(d_grad_z_2, d_grad_b_2, n, n_2);
+            timer.Stop();
+            compute_grad_b2_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -682,8 +747,11 @@ void train() {
         // L / a1
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
-            dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
+            dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start(); 
             g_mulMatsSecondTransposed<<<grid_size, block_size>>>(d_grad_z_2, d_w_2, d_grad_a_1, n, n_2, n_1);
+            timer.Stop();
+            compute_grad_a1_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -692,7 +760,11 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_computeDerivReLU<<<grid_size, block_size>>>(d_a_1, d_grad_a_1_z_1, n, n_1);
+            timer.Stop();
+            compute_derivReLU1_time.push_back(timer.Elapsed());
+
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -701,7 +773,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMatsElemWise<<<grid_size, block_size>>>(d_grad_a_1, d_grad_a_1_z_1, d_grad_z_1, n, n_1);
+            timer.Stop();
+            compute_grad_z1_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -710,7 +785,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n_0 + block_size.y - 1) / block_size.y);
+            timer.Start();
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_train_images, d_grad_z_1, d_grad_w_1, n_0, n, n_1);
+            timer.Stop();
+            compute_grad_w1_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -724,18 +802,26 @@ void train() {
         {
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_sumColsMat<<<grid_size, block_size>>>(d_grad_z_1, d_grad_b_1, n, n_1);
+            timer.Stop();
+            compute_grad_b1_time.push_back(timer.Elapsed());
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("L/b1");
+        
 
         // Update weight
         // w1
         {
+            update_time_temp = 0.0f;
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_0 * n_1 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_addLinear<<<grid_size, block_size>>>(d_w_1, d_grad_w_1, -learning_rate, n_0 * n_1);
+            timer.Stop();
+            update_time_temp += timer.Elapsed();
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -744,7 +830,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_addLinear<<<grid_size, block_size>>>(d_b_1, d_grad_b_1, -learning_rate, n_1);
+            timer.Stop();
+            update_time_temp += timer.Elapsed();
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -753,7 +842,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 * n_2 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_addLinear<<<grid_size, block_size>>>(d_w_2, d_grad_w_2, -learning_rate, n_1 * n_2);
+            timer.Stop();
+            update_time_temp += timer.Elapsed();
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -762,7 +854,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_addLinear<<<grid_size, block_size>>>(d_b_2, d_grad_b_2, -learning_rate, n_2);
+            timer.Stop();
+            update_time_temp += timer.Elapsed();
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -771,7 +866,10 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 * n_3 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_addLinear<<<grid_size, block_size>>>(d_w_3, d_grad_w_3, -learning_rate, n_2 * n_3);
+            timer.Stop();
+            update_time_temp += timer.Elapsed();
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -780,7 +878,11 @@ void train() {
         {
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x);
+            timer.Start();
             g_addLinear<<<grid_size, block_size>>>(d_b_3, d_grad_b_3, -learning_rate, n_3);
+            timer.Stop();
+            update_time_temp += timer.Elapsed();
+            update_time.push_back(update_time_temp);
         }
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
@@ -878,6 +980,24 @@ void train() {
     }
 
     saveWeights(save_weights_path);
+
+    vector<float> epoch;
+    for (int i = 0; i < num_epochs; ++i) {
+        epoch.push_back(i);
+    }
+    
+    vector<string> col_names = {"Epoch","Forward1", "Forward2", "Forward3", "ComputeDerivReLU1", "ComputeDerivReLU2", "ComputeSoftmax", "ComputeGradZ3", "ComputeGradZ2", "ComputeGradZ1", "ComputeGradW3", "ComputeGradW2", "ComputeGradW1", "ComputeGradB3", "ComputeGradB2", "ComputeGradB1", "ComputeGradA2", "ComputeGradA1", "Update"};
+    
+    DataFrame df(col_names);
+
+    for (int i = 0; i < num_epochs; ++i) {
+        vector<float> row = {epoch[i],forward1_time[i], forward2_time[i], forward3_time[i], compute_derivReLU1_time[i], compute_derivReLU2_time[i], compute_softmax_time[i], compute_grad_z3_time[i], compute_grad_z2_time[i], compute_grad_z1_time[i], compute_grad_w3_time[i], compute_grad_w2_time[i], compute_grad_w1_time[i], compute_grad_b3_time[i], compute_grad_b2_time[i], compute_grad_b1_time[i], compute_grad_a2_time[i], compute_grad_a1_time[i], update_time[i]};
+        df.addRow(row);
+    }
+
+    df.saveToFile("v1.csv");
+    
+
 
     CHECK_CUDA(cudaFree(d_w_1));
     CHECK_CUDA(cudaFree(d_b_1));

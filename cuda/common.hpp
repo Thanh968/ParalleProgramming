@@ -1,6 +1,11 @@
 #pragma once
 
 #include <iostream>
+#include <iomanip>
+#include <vector>
+#include <string>
+#include <fstream>
+using namespace std;
 
 #define DEFAULT_BLOCKSIZE 256
 #define DEFAULT_TILEWIDTH 32
@@ -67,4 +72,59 @@ struct GpuTimer
         cudaEventElapsedTime(&elapsed, start, stop);
         return elapsed;
     }
+};
+
+
+class DataFrame {
+private:
+    vector<string> column_names;
+    vector<vector<float>> data;
+
+public:
+    DataFrame(const vector<string>& col_names) : column_names(col_names) {}
+
+    void addRow(const vector<float>& row) {
+        if (row.size() != column_names.size()) {
+            throw invalid_argument("Row size must match the number of columns");
+        }
+        data.push_back(row);
+    }
+
+    void print() const {
+        for (const auto& name : column_names) {
+            cout << std::setw(10) << name << " ";
+        }
+        cout << "\n";
+
+        for (const auto& row : data) {
+            for (const auto& value : row) {
+                cout << std::setw(10) << value << " ";
+            }
+            cout << "\n";
+        }
+    }
+    void saveToFile(const string& filename) const {
+        ofstream outfile(filename);
+        if (!outfile) {
+            throw runtime_error("Unable to open file: " + filename);
+        }
+
+        // Ghi tên cột
+        for (const auto& name : column_names) {
+            outfile << name << "\t";
+        }
+        outfile << "\n";
+
+        // Ghi dữ liệu theo từng hàng
+        for (const auto& row : data) {
+            for (const auto& value : row) {
+                outfile << value << "\t";
+            }
+            outfile << "\n";
+        }
+
+        outfile.close();
+    }
+
+    
 };
