@@ -1,7 +1,8 @@
-test.cpp
-
 # Editor
 .vscode/
+
+# Environment
+.venv/*
 
 # Data
 **/ubyte

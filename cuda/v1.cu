@@ -577,7 +577,6 @@ void train() {
             g_mulMats<<<grid_size, block_size>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2, d_b_2, n, n_2);
             g_activReLU<<<grid_size, block_size>>>(d_z_2, d_a_2, n, n_2);
-            BREAK; print(d_a_2, 2, n_2);
         }
         BREAK;
         LOG("Forwarded layer 2.");
@@ -594,36 +593,7 @@ void train() {
             g_activSoftmax<<<grid_size, block_size>>>(d_z_3, d_a_3, n, n_3);
         }
         BREAK;
-        print(d_z_3 + (n - 18) * n_3, 18, n_3);
-        printf("---\n");
-        print(d_a_3 + (n - 18) * n_3, 18, n_3);
         LOG("Forwarded layer 3.");
-        // compute loss
-        {
-            float loss = 0.0f;
-            dim3 block_size(DEFAULT_BLOCKSIZE);
-            dim3 grid_size((n + block_size.x - 1) / block_size.x);
-            g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
-            CHECK_CUDA(cudaMemcpy(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost));
-            print(d_loss_train + n - 18, 18, 1);
-            for (int i = 0; i < n; ++i) {
-                loss += h_loss_train[i];
-            }
-            LOG("Epoch " << epoch << " completed. Train Loss: " << loss);
-        }
-
-        //compute accuracy
-        {
-            float acc = 0.0f;
-            CHECK_CUDA(cudaMemset(d_count_correct_train, 0, sizeof(int)));
-            dim3 block_size(DEFAULT_BLOCKSIZE);
-            dim3 grid_size((n + block_size.x - 1) / block_size.x);
-            g_computeAccuracy<<<grid_size, block_size>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
-            CHECK_CUDA(cudaMemcpy(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost));
-            CHECK_CUDA(cudaDeviceSynchronize());
-            acc = static_cast<float>(*h_count_correct_train) / n;
-            LOG("Epoch " << epoch << " completed. Train Accuracy: " << acc);
-        }
 
         // -------------------------------
         // Backward
@@ -644,8 +614,6 @@ void train() {
         }
         // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
-        print(d_a_2, 1, n_2);
-        print(d_grad_w_3, 1, n_3);
         LOG("L/w3");
         // L / b3
         // {
@@ -817,6 +785,32 @@ void train() {
         CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("Update b3");
+
+        // compute loss
+        {
+            float loss = 0.0f;
+            dim3 block_size(DEFAULT_BLOCKSIZE);
+            dim3 grid_size((n + block_size.x - 1) / block_size.x);
+            g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
+            CHECK_CUDA(cudaMemcpy(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost));
+            for (int i = 0; i < n; ++i) {
+                loss += h_loss_train[i];
+            }
+            LOG("Epoch " << epoch << " completed. Train Loss: " << loss);
+        }
+
+        //compute accuracy
+        {
+            float acc = 0.0f;
+            CHECK_CUDA(cudaMemset(d_count_correct_train, 0, sizeof(int)));
+            dim3 block_size(DEFAULT_BLOCKSIZE);
+            dim3 grid_size((n + block_size.x - 1) / block_size.x);
+            g_computeAccuracy<<<grid_size, block_size>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
+            CHECK_CUDA(cudaMemcpy(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost));
+            CHECK_CUDA(cudaDeviceSynchronize());
+            acc = static_cast<float>(*h_count_correct_train) / n;
+            LOG("Epoch " << epoch << " completed. Train Accuracy: " << acc);
+        }
 
         // Forward
         {
