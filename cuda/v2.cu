@@ -674,10 +674,19 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
-            g_subRowsMats<<<grid_size, block_size, 0, streams[1]>>>(d_a_3, d_train_labels, d_grad_z_3, n, n_3);
+            g_subRowsMats<<<grid_size, block_size, 0, streams[0]>>>(d_a_3, d_train_labels, d_grad_z_3, n, n_3);
             cudaEventRecord(event_0_10, streams[0]);
         }
         LOG("L/z3");
+
+        // L / a2
+        {
+            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+            dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
+            g_mulMatsSecondTransposed<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
+            CHECK_CUDA(cudaEventRecord(event_0_11, streams[0]));
+        }
+        LOG("L/a2");
 
         // L / w3
         {
@@ -692,6 +701,7 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 * n_3 + block_size.x - 1) / block_size.x);
+            CHECK_CUDA(cudaStreamWaitEvent(streams[2], event_0_11));
             g_addLinear<<<grid_size, block_size, 0, streams[2]>>>(d_w_3, d_grad_w_3, -learning_rate, n_2 * n_3);
         }
         LOG("Update w3");
@@ -712,15 +722,6 @@ void train() {
             g_addLinear<<<grid_size, block_size, 0, streams[1]>>>(d_b_3, d_grad_b_3, -learning_rate, n_3);
         }
         LOG("Update b3");
-
-        // L / a2
-        {
-            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
-            dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
-            g_mulMatsSecondTransposed<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
-            CHECK_CUDA(cudaEventRecord(event_0_11, streams[0]));
-        }
-        LOG("L/a2");
         
         // L / z2
         {
@@ -762,6 +763,7 @@ void train() {
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 * n_2 + block_size.x - 1) / block_size.x);
+            CHECK_CUDA(cudaStreamWaitEvent(streams[2], event_0_13));
             g_addLinear<<<grid_size, block_size, 0, streams[2]>>>(d_w_2, d_grad_w_2, -learning_rate, n_1 * n_2);
         }
         LOG("Update w2");
@@ -771,6 +773,7 @@ void train() {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
             g_mulMatsSecondTransposed<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_2, d_w_2, d_grad_a_1, n, n_2, n_1);
+            CHECK_CUDA(cudaEventRecord(event_0_13, streams[0]));
         }
         LOG("L/a1");
 
