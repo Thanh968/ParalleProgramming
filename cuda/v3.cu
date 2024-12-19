@@ -495,7 +495,7 @@ __global__ void g_mulMatsSecondTransposed(float* mat_a, float* mat_b, float* mat
         for (int i = 0; i < n; ++i) {
             out_rc += mat_a[r * n + i] * mat_b[c * n + i];
         }
-        mat_out[r * k + c] = out_rc/m;
+        mat_out[r * k + c] = out_rc;
     }
 }
 
@@ -528,7 +528,7 @@ __global__ void g_sumColsMat(float* mat, float* vec_out, int m, int n) {
     for (int i = 0; i < m; ++i) {
         sum += mat[i * n + c];
     }
-    vec_out[c] = sum;
+    vec_out[c] = sum / m;
 }
 
 __global__ void g_mulMatsElemWise(float* mat_a, float* mat_b, float* mat_out, int m, int n) {
@@ -699,7 +699,6 @@ void train() {
             dim3 grid_size((n_1 + BK - 1) / BK, (n + BM - 1) / BM);
             g_mulMats2DBlocktiling<<<grid_size, block_size>>>(d_train_images, d_w_1, d_z_1, n, n_0, n_1);
         }
-        BREAK;
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
@@ -707,16 +706,19 @@ void train() {
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_1, d_b_1, n, n_1);
             g_activReLU<<<grid_size, block_size>>>(d_z_1, d_a_1, n, n_1);
         }
-        BREAK;
         LOG("Forwarded layer 1.");
+        {
+            dim3 block_size((BM * BK) / (TM * TK));
+            dim3 grid_size((n_2 + BK - 1) / BK, (n + BM - 1) / BM);
+            g_mulMats2DBlocktiling<<<grid_size, block_size>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
+        }
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
-            g_mulMats<<<grid_size, block_size>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
+            // g_mulMats<<<grid_size, block_size>>>(d_a_1, d_w_2, d_z_2, n, n_1, n_2);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2, d_b_2, n, n_2);
             g_activReLU<<<grid_size, block_size>>>(d_z_2, d_a_2, n, n_2);
         }
-        BREAK;
         LOG("Forwarded layer 2.");
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
@@ -724,40 +726,31 @@ void train() {
             g_mulMats<<<grid_size, block_size>>>(d_a_2, d_w_3, d_z_3, n, n_2, n_3);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_3, d_b_3, n, n_3);
         }
-        BREAK;
         {
             dim3 block_size(1, DEFAULT_BLOCKSIZE);
             dim3 grid_size(1, (n + block_size.y - 1) / block_size.y);
             g_activSoftmax<<<grid_size, block_size>>>(d_z_3, d_a_3, n, n_3);
         }
-        BREAK;
         LOG("Forwarded layer 3.");
-        
 
-        // -------------------------------
-        // Backward
         // L / z3
         {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_subRowsMats<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_grad_z_3, n, n_3);
         }
-        // CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/z3");
         // L / w3
-        {
-            dim3 block_size((BM * BK) / (TM * TK));
-            dim3 grid_size((n_3 + BK - 1) / BK, (n_2 + BM - 1) / BM);
-            g_mulMatsFirstTransposed2DBlocktiling<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
-        }
         // {
-        //     dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
-        //     dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
-        //     g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
+        //     dim3 block_size((BM * BK) / (TM * TK));
+        //     dim3 grid_size((n_3 + BK - 1) / BK, (n_2 + BM - 1) / BM);
+        //     g_mulMatsFirstTransposed2DBlocktiling<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
         // }
-        // CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
+        {
+            dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
+            dim3 grid_size((n_3 + block_size.x - 1) / block_size.x, (n_2 + block_size.y - 1) / block_size.y);
+            g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_2, d_grad_z_3, d_grad_w_3, n_2, n, n_3);
+        }
         LOG("L/w3");
         // L / b3
         // {
@@ -770,8 +763,6 @@ void train() {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x);
             g_sumColsMat<<<grid_size, block_size>>>(d_grad_z_3, d_grad_b_3, n, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/b3");
         // L / a2
         {
@@ -779,8 +770,6 @@ void train() {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
             g_mulMatsSecondTransposed<<<grid_size, block_size>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/a2");
         // a2 / z2
         {
@@ -788,8 +777,6 @@ void train() {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_computeDerivReLU<<<grid_size, block_size>>>(d_a_2, d_grad_a_2_z_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("a2/z2");
         // L / z2
         {
@@ -797,8 +784,6 @@ void train() {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_mulMatsElemWise<<<grid_size, block_size>>>(d_grad_a_2, d_grad_a_2_z_2, d_grad_z_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/z2");
         // L / w2
         {
@@ -806,8 +791,6 @@ void train() {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_1 + block_size.y - 1) / block_size.y);
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_a_1, d_grad_z_2, d_grad_w_2, n_1, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/w2");
         // L / b2
         // {
@@ -820,8 +803,6 @@ void train() {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x);
             g_sumColsMat<<<grid_size, block_size>>>(d_grad_z_2, d_grad_b_2, n, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/b2");
         // L / a1
         {
@@ -829,8 +810,6 @@ void train() {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y); 
             g_mulMatsSecondTransposed<<<grid_size, block_size>>>(d_grad_z_2, d_w_2, d_grad_a_1, n, n_2, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/a1");
         // a1 / z1
         {
@@ -838,8 +817,6 @@ void train() {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_computeDerivReLU<<<grid_size, block_size>>>(d_a_1, d_grad_a_1_z_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("a1/z1");
         // L / z1
         {
@@ -847,8 +824,6 @@ void train() {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n + block_size.y - 1) / block_size.y);
             g_mulMatsElemWise<<<grid_size, block_size>>>(d_grad_a_1, d_grad_a_1_z_1, d_grad_z_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/z1");
         // L / w1
         {
@@ -856,8 +831,6 @@ void train() {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n_0 + block_size.y - 1) / block_size.y);
             g_mulMatsFirstTransposed<<<grid_size, block_size>>>(d_train_images, d_grad_z_1, d_grad_w_1, n_0, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/w1");
         // L / b1
         // {
@@ -870,8 +843,6 @@ void train() {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x);
             g_sumColsMat<<<grid_size, block_size>>>(d_grad_z_1, d_grad_b_1, n, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("L/b1");
 
         // Update weight
@@ -881,8 +852,6 @@ void train() {
             dim3 grid_size((n_0 * n_1 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_w_1, d_grad_w_1, -learning_rate, n_0 * n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("Update w1");
         // b1
         {
@@ -890,8 +859,6 @@ void train() {
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_b_1, d_grad_b_1, -learning_rate, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("Update b1");
         // w2
         {
@@ -899,8 +866,6 @@ void train() {
             dim3 grid_size((n_1 * n_2 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_w_2, d_grad_w_2, -learning_rate, n_1 * n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("Update w2");
         // b2
         {
@@ -908,8 +873,6 @@ void train() {
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_b_2, d_grad_b_2, -learning_rate, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("Update b2");
         // w3
         {
@@ -917,8 +880,6 @@ void train() {
             dim3 grid_size((n_2 * n_3 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_w_3, d_grad_w_3, -learning_rate, n_2 * n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("Update w3");
         // b3
         {
@@ -926,8 +887,6 @@ void train() {
             dim3 grid_size((n_3 + block_size.x - 1) / block_size.x);
             g_addLinear<<<grid_size, block_size>>>(d_b_3, d_grad_b_3, -learning_rate, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
-        BREAK;
         LOG("Update b3");
 
 
@@ -959,23 +918,33 @@ void train() {
 
         // Forward
         {
+            dim3 block_size((BM * BK) / (TM * TK));
+            dim3 grid_size((n_1 + BK - 1) / BK, (n_infer + BM - 1) / BM);
+            g_mulMats2DBlocktiling<<<grid_size, block_size>>>(d_val_images, d_w_1, d_z_1_infer, n_infer, n_0, n_1);
+        }
+        {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_1 + block_size.x - 1) / block_size.x, (n_infer + block_size.y - 1) / block_size.y);
-            g_mulMats<<<grid_size, block_size>>>(d_val_images, d_w_1, d_z_1_infer, n_infer, n_0, n_1);
+            // g_mulMats<<<grid_size, block_size>>>(d_val_images, d_w_1, d_z_1_infer, n_infer, n_0, n_1);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_1_infer, d_b_1, n_infer, n_1);
             g_activReLU<<<grid_size, block_size>>>(d_z_1_infer, d_a_1_infer, n_infer, n_1);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("Forwarded layer 1.");
         {
+            dim3 block_size((BM * BK) / (TM * TK));
+            dim3 grid_size((n_2 + BK - 1) / BK, (n_infer + BM - 1) / BM);
+            g_mulMats2DBlocktiling<<<grid_size, block_size>>>(d_a_1_infer, d_w_2, d_z_2_infer, n_infer, n_1, n_2);
+        }
+        {
             dim3 block_size(DEFAULT_TILEWIDTH, DEFAULT_TILEWIDTH);
             dim3 grid_size((n_2 + block_size.x - 1) / block_size.x, (n_infer + block_size.y - 1) / block_size.y);
-            g_mulMats<<<grid_size, block_size>>>(d_a_1_infer, d_w_2, d_z_2_infer, n_infer, n_1, n_2);
+            // g_mulMats<<<grid_size, block_size>>>(d_a_1_infer, d_w_2, d_z_2_infer, n_infer, n_1, n_2);
             g_addRowsMatVec<<<grid_size, block_size>>>(d_z_2_infer, d_b_2, n_infer, n_2);
             g_activReLU<<<grid_size, block_size>>>(d_z_2_infer, d_a_2_infer, n_infer, n_2);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("Forwarded layer 2.");
         {
@@ -989,7 +958,7 @@ void train() {
             dim3 grid_size(1, (n_infer + block_size.y - 1) / block_size.y);
             g_activSoftmax<<<grid_size, block_size>>>(d_z_3_infer, d_a_3_infer, n_infer, n_3);
         }
-        CHECK_CUDA(cudaDeviceSynchronize());
+        // CHECK_CUDA(cudaDeviceSynchronize());
         BREAK;
         LOG("Forwarded layer 3.");
 

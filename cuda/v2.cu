@@ -832,14 +832,21 @@ void train() {
             dim3 grid_size((n + block_size.x - 1) / block_size.x);
             g_computeAccuracy<<<grid_size, block_size>>>(d_z_3, d_train_labels, d_count_correct_train, n, n_3);
             CHECK_CUDA(cudaMemcpy(h_count_correct_train, d_count_correct_train, sizeof(int), cudaMemcpyDeviceToHost));
+            train_acc = static_cast<float>(*h_count_correct_train) / n;
+            LOG("Train Accuracy: " << train_acc);
         }
 
         // compute loss
         {
+            train_loss = 0.0f;
             dim3 block_size(DEFAULT_BLOCKSIZE);
             dim3 grid_size((n + block_size.x - 1) / block_size.x);
             g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3, d_train_labels, d_loss_train, n, n_3);
             CHECK_CUDA(cudaMemcpy(h_loss_train, d_loss_train, n * sizeof(float), cudaMemcpyDeviceToHost));
+            for (int i = 0; i < n; ++i) {
+                train_loss += h_loss_train[i];
+            }
+            LOG("Train Loss: " << train_loss / n);
         }
 
         CHECK_CUDA(cudaDeviceSynchronize());
@@ -874,20 +881,6 @@ void train() {
         }
         LOG("Forwarded layer 3.");
 
-        // Compute train accuracy
-        {
-            train_acc = static_cast<float>(*h_count_correct_train) / n;
-            LOG("Train Accuracy: " << train_acc);
-        }
-
-        // Compute train loss
-        {
-            for (int i = 0; i < n; ++i) {
-                train_loss += h_loss_train[i];
-            }
-            LOG("Train Loss: " << train_loss / n);
-        }
-
         // Compute validation accuracy
         {
             float acc = 0.0f;
@@ -907,7 +900,7 @@ void train() {
             dim3 grid_size((n_infer + block_size.x - 1) / block_size.x);
             g_computeCrossEntropy<<<grid_size, block_size>>>(d_a_3_infer, d_val_labels, d_loss_infer, n_infer, n_3);
             CHECK_CUDA(cudaMemcpy(h_loss_infer, d_loss_infer, n_infer * sizeof(float), cudaMemcpyDeviceToHost));
-            for (int i = 0; i < n; ++i) {
+            for (int i = 0; i < n_infer; ++i) {
                 loss += h_loss_infer[i];
             }
             LOG("Validation Loss: " << loss / n_infer);

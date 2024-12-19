@@ -895,7 +895,7 @@ void train() {
         {
             dim3 block_size((BM * BK) / (TM * TK));
             dim3 grid_size((n_2 + BK - 1) / BK, (n + BM - 1) / BM);
-            g_mulMatsSecondTransposed<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
+            g_mulMatsSecondTransposed2DBlocktiling<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_3, d_w_3, d_grad_a_2, n, n_3, n_2);
             CHECK_CUDA(cudaEventRecord(event_0_11, streams[0]));
         }
         LOG("L/a2");
@@ -1000,7 +1000,7 @@ void train() {
         {
             dim3 block_size((BM * BK) / (TM * TK));
             dim3 grid_size((n_1 + BK - 1) / BK, (n + BM - 1) / BM);
-            g_mulMatsSecondTransposed<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_2, d_w_2, d_grad_a_1, n, n_2, n_1);
+            g_mulMatsSecondTransposed2DBlocktiling<<<grid_size, block_size, 0, streams[0]>>>(d_grad_z_2, d_w_2, d_grad_a_1, n, n_2, n_1);
             CHECK_CUDA(cudaEventRecord(event_0_13, streams[0]));
         }
         LOG("L/a1");
