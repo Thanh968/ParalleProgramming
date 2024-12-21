@@ -109,16 +109,14 @@ public:
             throw runtime_error("Unable to open file: " + filename);
         }
 
-        // Ghi tên cột
         for (const auto& name : column_names) {
-            outfile << name << "\t";
+            outfile << name << ",";
         }
         outfile << "\n";
 
-        // Ghi dữ liệu theo từng hàng
         for (const auto& row : data) {
             for (const auto& value : row) {
-                outfile << value << "\t";
+                outfile << value << ",";
             }
             outfile << "\n";
         }

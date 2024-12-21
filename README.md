@@ -12,46 +12,41 @@
 ## Project structure
 ```
 .
-├── cpu
-│   └── source.cu
 ├── cuda
 │   ├── common.hpp
 │   ├── v1.cu
 │   ├── v2.cu
 │   ├── v3.cu
-│   └── v4.cu
+│   ├── v4.cu
+│   └── v5.cu
 ├── data
 │   ├── train-images-idx3-ubyte
 │   ├── train-labels-idx1-ubyte
 │   ├── val-images-idx3-ubyte
-│   └── val-labels-idx1-ubyte
+│   ├── val-labels-idx1-ubyte
+│   ├── t10k-images-idx3-ubyte
+│   └── t10k-labels-idx1-ubyte
 ├── default_training_script.sh
-├── README.md
-├── split_dataset.py
-├── train-images-idx3-ubyte
-└── train-labels-idx1-ubyte
+├── weight.txt
+├── cpu.cu
+└── README.md
 ```
 - `cpu`: sequential CPU code with no engineering optimization.
 - `cuda`:
   - `v1.cu` is the naive interpretation of CPU version.
   - `v2.cu` utilizes CUDA streams for overlapping tasks (see the report/notebook for more details).
-  - `v3.cu` optimizes matrix multiplication operation with 2D blocktiling.
-  - `v4.cu` combines `v2` and `v3`.
-- `split_dataset.py`: split the dataset into training set and validation set.
+  - `v3.cu` optimizes matrix multiplication operation using shared memory.
+  - `v4.cu` optimizes matrix multiplication operation with 2D blocktiling.
+  - `v5.cu` combines `v2` and `v4`.
 
 ## Compiling source code
-- The repository comes with an already-splitted dataset. If you want to re-split it:
-  - Initialize a virtual environment (optional):
+- For `cpu` version, compile with:
     ```bash
-    $ python3 -m venv .venv
+    $ nvcc cpu.cu -o cpu.out
     ```
-  - Run the script:
+    Run cpu version:
     ```bash
-    $ python3 split_dataset.py --images-path <path-to-train-images> --labels-path <path-to-train-labels> --output-dir <output-directory path>
-    ```
-    For example:
-    ```bash
-    $ python3 split_dataset.py --images-path train-images-idx3-ubyte --labels-path train-labels-idx1-ubyte --output-dir data
+    $ ./cpu.out
     ```
 - For `cuda`'s versions, compile with:
     ```bash
@@ -64,7 +59,6 @@
 - Run executable:
     ```bash
     $ ./main --train-images <path-to-train-images> --train-labels <path-to-train-labels> --val-images <path-to-validation-images> --val-labels <path-to-validation-labels> --save-checkpoint <path-to-save-model-weights> --num-epochs <number-of-training-epochs>
-    ```
-    An example command can be found in `default_training_script.py`
+    ````
 
 ## Demo video
