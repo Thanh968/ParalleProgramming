@@ -38,7 +38,8 @@
   - `v3.cu` optimizes matrix multiplication operation using shared memory.
   - `v4.cu` optimizes matrix multiplication operation with 2D blocktiling.
   - `v5.cu` combines `v2` and `v4`.
-
+## Dataset
+- Download the dataset from [this link](https://drive.google.com/drive/folders/1pEGgz7CIIk_9CXbcw3hxmxYSVBX_iK6G?usp=sharing).
 ## Compiling source code
 - For `cpu` version, compile with:
     ```bash
